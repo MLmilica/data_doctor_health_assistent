@@ -234,3 +234,5 @@ artifacts/insights/*
 
 # Cursor local state
 .cursor/
+
+notebooks/02_ml_development copy.ipynb
