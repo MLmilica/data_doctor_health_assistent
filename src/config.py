@@ -1,0 +1,36 @@
+"""Application configuration and paths."""
+
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # Paths
+    patient_csv_path: Path = PROJECT_ROOT / "data" / "raw" / "patient_data.csv"
+    documents_dir: Path = PROJECT_ROOT / "data" / "documents"
+    artifacts_dir: Path = PROJECT_ROOT / "artifacts"
+    chroma_dir: Path = PROJECT_ROOT / "data" / "chroma"
+    checkpoint_db_path: Path = PROJECT_ROOT / "data" / "checkpoints.db"
+
+    # API
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_base_url: str = "http://localhost:8000"
+
+    # LLM
+    openai_api_key: str = ""
+    llm_model_routing: str = "gpt-4o-mini"
+    llm_model_synthesis: str = "gpt-4o"
+
+    # LangSmith
+    langchain_tracing_v2: bool = False
+    langchain_api_key: str = ""
+    langchain_project: str = "data-doctor"
+
+
+settings = Settings()

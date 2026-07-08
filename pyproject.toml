@@ -1,7 +1,57 @@
 [project]
 name = "loka1"
 version = "0.1.0"
-description = "Add your description here"
+description = "Data Doctor — AI Health Assistant POC"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langsmith>=0.1.0",
+    "duckdb>=1.0.0",
+    "pandas>=2.0.0",
+    "chromadb>=0.5.0",
+    "plotly>=5.0.0",
+    "scikit-learn>=1.5.0",
+    "xgboost>=2.0.0",
+    "streamlit>=1.40.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    "jupyter>=1.1.0",
+    "ipykernel>=6.29.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"

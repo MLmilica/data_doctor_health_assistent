@@ -69,11 +69,8 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
-docs/OVERVIEW.md
-docs/ARCHITECTURE.md
-docs/DECISIONS.md
+# Internal project docs (local only)
+docs/
 
 # PyBuilder
 .pybuilder/
@@ -222,6 +219,18 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-patient_data.csv
-documents_data/
+data/raw/
+data/documents/
+data/chroma/
+data/checkpoints.db
 .DS_Store
+
+# Generated artifacts (regenerate with: uv run python main.py)
+artifacts/data_profile.json
+artifacts/models/*
+!artifacts/models/.gitkeep
+artifacts/insights/*
+!artifacts/insights/.gitkeep
+
+# Cursor local state
+.cursor/
