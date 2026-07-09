@@ -26,9 +26,13 @@ def build_graph():
     return builder.compile()
 
 
-def run_chat_graph(request: ChatRequest) -> ChatResponse:
-    """Invoke the graph for one chat request and return the public API response."""
-    graph = build_graph()
+def invoke_chat_graph(graph, request: ChatRequest) -> ChatResponse:
+    """Invoke a compiled graph for one chat request."""
     initial_state = initial_state_from_chat_request(request)
     final_state = cast(AgentState, graph.invoke(initial_state))
     return chat_response_from_state(final_state)
+
+
+def run_chat_graph(request: ChatRequest) -> ChatResponse:
+    """Invoke the graph for one chat request and return the public API response."""
+    return invoke_chat_graph(build_graph(), request)

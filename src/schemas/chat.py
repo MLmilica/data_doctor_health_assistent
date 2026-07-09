@@ -135,7 +135,7 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "error"] = "ok"
     api: Literal["up"] = "up"
     llm_configured: bool = Field(
-        description="True when OPENAI_API_KEY is set (required for this slice).",
+        description="True when the configured LLM provider API key is set.",
     )
     ml_models_loaded: bool = Field(
         default=False,

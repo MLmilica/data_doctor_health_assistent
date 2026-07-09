@@ -234,3 +234,78 @@ Difference vs graph smoke test: this script calls `run_prediction_agent` directl
 - `FileNotFoundError` for model artifacts -> run `uv run python -m ml.train`
 - empty `response.text` -> inspect provider/model settings in `src/config.py`
 
+---
+
+## Running the API
+
+API entry point: `src/api/main.py`
+
+Endpoints:
+
+- `GET /health` — readiness check (`llm_configured`, `ml_models_loaded`)
+- `POST /chat` — natural-language chat routed through LangGraph
+
+### Prerequisites
+
+1. Dependencies installed (`uv sync`)
+2. `.env` configured with provider API key
+3. ML artifacts available (if missing: `uv run python -m ml.train`)
+
+### Start server
+
+From project root:
+
+```bash
+uv run uvicorn api.main:app --reload --app-dir src
+```
+
+Default URL: `http://localhost:8000`, 
+Swagger UI (interactiv testing): `http://localhost:8000/docs`
+
+On startup, API preloads ML models (if artifacts exist) and compiles the LangGraph instance.
+
+### Health check
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected fields:
+
+- `status`: `ok`, `degraded`, or `error`
+- `api`: `up`
+- `llm_configured`: `true` when provider key is set
+- `ml_models_loaded`: `true` when COPD/ALT artifacts were loaded
+
+### Chat request
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Predict ALT for a patient with BMI 30","session_id":"api-demo-1"}'
+```
+
+Request body (`ChatRequest`):
+
+```json
+{
+  "message": "Predict ALT for a patient with BMI 30",
+  "session_id": "api-demo-1",
+  "user_id": "default-user"
+}
+```
+
+`session_id` and `user_id` are optional (defaults are generated/used by schema).
+
+### API tests
+
+```bash
+uv run pytest tests/test_api/test_chat.py -v
+```
+
+### Common API issues
+
+- `503` on `/chat` with missing LLM key -> configure `.env` (`LLM_PROVIDER` + provider key)
+- `degraded` on `/health` -> usually missing LLM key or ML artifacts
+- model artifact errors -> run `uv run python -m ml.train`
+
