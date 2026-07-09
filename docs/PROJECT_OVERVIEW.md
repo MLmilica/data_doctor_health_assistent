@@ -19,6 +19,7 @@ Current implemented core for the prediction slice:
   - extraction (`user message -> structured prediction request`)
   - synthesis (`prediction facts -> analyst-friendly explanation`)
 - Deterministic prediction response contract (LLM does not invent prediction values)
+- Minimal LangGraph flow: `START -> predict -> END`
 
 ---
 
@@ -90,6 +91,12 @@ Target only prediction agent tests:
 uv run pytest tests/test_agents/test_prediction_agent.py -v
 ```
 
+Target only LangGraph tests:
+
+```bash
+uv run pytest tests/test_agents/test_graph.py -v
+```
+
 ### Run type checks
 
 ```bash
@@ -98,9 +105,108 @@ uv run pyright
 
 ---
 
-## Prediction Agent Smoke Test (Real Runtime)
+## LangGraph Prediction Flow
 
-The script below executes the prediction agent with real model calls based on your `.env` provider/key:
+Graph entry point: `src/agents/graph.py`
+
+Flow:
+
+```text
+ChatRequest -> initial AgentState -> graph.invoke() -> final AgentState -> ChatResponse
+```
+
+Graph topology:
+
+```text
+START -> predict -> END
+```
+
+- `predict` node calls `run_prediction_agent`
+- `run_chat_graph(request)` is the high-level helper used by API/UI
+
+For runtime smoke testing, see **Runtime Smoke Tests** at the end of this document.
+
+---
+
+## Runtime Smoke Tests
+
+Use these scripts to verify real LLM + ML behavior (not mocked unit tests).
+
+| Script | What it exercises |
+|--------|-------------------|
+| `scripts/smoke_chat_graph.py` | Full path: `ChatRequest -> LangGraph -> prediction agent -> ML -> ChatResponse` |
+| `scripts/smoke_prediction_agent.py` | Prediction agent only (bypasses LangGraph wrapper) |
+
+Both scripts print JSON with `request`, `response`, and `state_error`.
+
+### Prerequisites
+
+1. Dependencies installed (`uv sync`)
+2. `.env` configured with a valid provider API key
+3. ML artifacts available (if missing, run `uv run python -m ml.train`)
+
+### Shared output checks
+
+| Field | Pass condition |
+|-------|----------------|
+| `state_error` | `null` for successful runs |
+| `response.session_id` | matches `--session-id` (or default `smoke-session`) |
+| `response.text` | readable answer text |
+| `response.prediction` | present for single-target prediction prompts |
+| `response.predictions` | present for `both` prompts (`copd` + `alt`) |
+| `response.prediction.can_predict` | `true` when required features are available |
+| `response.prediction.defaults_used` | may be non-empty when optional fields are imputed |
+| `response.metadata.llm_model` | populated (routing + synthesis models) |
+| `response.metadata.latency_ms` | positive number |
+
+### Example prompts
+
+- `Predict ALT for a patient with BMI 30`
+- `Predict COPD for smoker with poor diet and low exercise`
+- `I need both predictions for BMI 29, moderate exercise, middle income`
+- `Predict COPD`
+- `Show me a SQL query for readmissions by month`
+
+### Test `smoke_chat_graph.py`
+
+Basic run:
+
+```bash
+uv run python scripts/smoke_chat_graph.py
+```
+
+Custom message:
+
+```bash
+uv run python scripts/smoke_chat_graph.py --message "Predict ALT for a patient with BMI 30"
+```
+
+Custom session id:
+
+```bash
+uv run python scripts/smoke_chat_graph.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id demo-1
+```
+
+Suggested manual cases:
+
+```bash
+uv run python scripts/smoke_chat_graph.py --message "Predict ALT for a patient with BMI 30" --session-id t1
+uv run python scripts/smoke_chat_graph.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id t2
+uv run python scripts/smoke_chat_graph.py --message "I need both predictions for BMI 29, moderate exercise, middle income" --session-id t3
+uv run python scripts/smoke_chat_graph.py --message "Predict COPD" --session-id t4
+uv run python scripts/smoke_chat_graph.py --message "Show me a SQL query for readmissions by month" --session-id t5
+```
+
+Expected by case:
+
+- **t1/t2:** `state_error = null`, prediction present, `can_predict = true`
+- **t3:** `response.predictions` contains both `copd` and `alt`
+- **t4:** clarification text or `can_predict = false` with `missing_required`
+- **t5:** no ML prediction payload; out-of-scope style response text
+
+### Test `smoke_prediction_agent.py`
+
+Basic run:
 
 ```bash
 uv run python scripts/smoke_prediction_agent.py
@@ -118,19 +224,13 @@ Custom session id:
 uv run python scripts/smoke_prediction_agent.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id demo-1
 ```
 
-The script prints a JSON payload with:
+Use the same manual cases (`t1`–`t5`) as above; expected output shape is the same JSON contract.
 
-- `request`
-- `response` (chat + prediction payload)
-- `state_error` (if any)
+Difference vs graph smoke test: this script calls `run_prediction_agent` directly, so it is useful when debugging agent logic without LangGraph wiring.
 
----
+### Common failure signals
 
-## Example Prompts
-
-- `Predict ALT for a patient with BMI 30`
-- `Predict COPD for smoker with poor diet and low exercise`
-- `I need both predictions for BMI 29, moderate exercise, middle income`
-- `Predict COPD`
-- `Show me a SQL query for readmissions by month`
+- `state_error` contains API key/config errors -> check `.env` (`LLM_PROVIDER`, key variables)
+- `FileNotFoundError` for model artifacts -> run `uv run python -m ml.train`
+- empty `response.text` -> inspect provider/model settings in `src/config.py`
 
