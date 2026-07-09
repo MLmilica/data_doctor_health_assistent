@@ -26,7 +26,7 @@ from ml.features import (  # noqa: E402
     COPD_REQUIRED_COLS,
     _default_for_column,
 )
-from schemas.chat import ChatPredictionDetails, ChatResponse, HealthResponse  # noqa: E402
+from schemas.chat import ChatDataQueryDetails, ChatPredictionDetails, ChatResponse, HealthResponse  # noqa: E402
 from schemas.data import DataProfile  # noqa: E402
 from schemas.prediction import PatientFeatures, PredictionRequest, PredictionTarget  # noqa: E402
 
@@ -113,6 +113,23 @@ def _routing_metadata_parts(response: ChatResponse) -> list[str]:
     return parts
 
 
+def _render_data_query_details(details: ChatDataQueryDetails) -> None:
+    if details.explanation:
+        st.markdown(f"**Query:** {details.explanation}")
+    st.caption(f"Rows returned: {details.row_count}")
+    if details.truncated:
+        st.caption(f"Results truncated to displayed row cap.")
+
+    with st.expander("SQL", expanded=False):
+        st.code(details.sql, language="sql")
+
+    if details.rows:
+        with st.expander("Result table", expanded=True):
+            st.dataframe(details.rows, use_container_width=True)
+
+    st.caption(details.disclaimer)
+
+
 def _render_chat_response(response: ChatResponse) -> None:
     st.markdown(response.text)
 
@@ -122,6 +139,10 @@ def _render_chat_response(response: ChatResponse) -> None:
     if response.predictions:
         for key, details in response.predictions.items():
             _render_prediction_details(details, label=key)
+
+    if response.data_query is not None:
+        with st.expander("Data query details", expanded=True):
+            _render_data_query_details(response.data_query)
 
     meta_parts = _routing_metadata_parts(response)
     if response.metadata.llm_model:
@@ -214,6 +235,7 @@ def _chat_tab() -> None:
             "route_confidence": response.metadata.route_confidence,
             "route_source": response.metadata.route_source,
             "guardrail_blocked": response.metadata.guardrail_blocked,
+            "data_rows": response.data_query.row_count if response.data_query else None,
         }
         st.rerun()
     except httpx.HTTPStatusError as exc:

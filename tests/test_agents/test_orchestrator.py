@@ -65,3 +65,12 @@ def test_run_orchestrator_routes_sql_to_data() -> None:
     updated = run_orchestrator(state)
     assert updated.get("route") == AgentRoute.DATA.value
     assert updated.get("guardrail_blocked") is False
+
+
+def test_route_with_rules_copd_analytics_goes_to_data() -> None:
+    decision = route_with_rules(
+        "For each exercise frequency level, show the count of patients in each COPD severity class.",
+    )
+    assert decision is not None
+    assert decision.route == AgentRoute.DATA
+    assert decision.source == "rules"

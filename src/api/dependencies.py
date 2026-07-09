@@ -50,6 +50,9 @@ def startup() -> None:
 def shutdown() -> None:
     global _graph, _ml_models_loaded
 
+    from agents.tools.sql_layer import reset_sql_layer
+
     _graph = None
     _ml_models_loaded = False
     ModelRegistry.reset()
+    reset_sql_layer()

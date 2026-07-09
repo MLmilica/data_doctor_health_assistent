@@ -9,6 +9,7 @@ from agents.graph import build_graph, run_chat_graph
 from agents.state import initial_state_from_chat_request
 from schemas.chat import ChatRequest
 from schemas.routing import AgentRoute
+from schemas.sql import LLMSQLExtraction
 
 
 def test_build_graph_compiles() -> None:
@@ -77,14 +78,27 @@ def test_run_chat_graph_returns_chat_response(mock_predict: Any) -> None:
     assert response.metadata.routed_to == AgentRoute.PREDICTION.value
 
 
-def test_graph_routes_sql_message_to_data_stub() -> None:
+@patch("agents.subagents.data_agent.synthesize_data_response_text")
+@patch("agents.subagents.data_agent.extract_sql_with_llm")
+def test_graph_routes_sql_message_to_data_agent(mock_extract_sql: Any, mock_synthesize: Any) -> None:
+    mock_extract_sql.return_value = LLMSQLExtraction(
+        sql=(
+            "SELECT income_bracket, COUNT(*) AS patient_count "
+            "FROM patients GROUP BY income_bracket ORDER BY income_bracket"
+        ),
+        explanation="Patients per income bracket.",
+    )
+    mock_synthesize.return_value = "Three income brackets in the dataset."
+
     response = run_chat_graph(
-        ChatRequest(message="Show me a SQL query for readmissions by month", session_id="sess-3"),
+        ChatRequest(message="How many patients per income bracket?", session_id="sess-3"),
     )
 
     assert response.metadata.routed_to == AgentRoute.DATA.value
     assert response.prediction is None
-    assert "data agent" in response.text.lower()
+    assert response.data_query is not None
+    assert response.data_query.row_count == 3
+    assert "income bracket" in response.text.lower()
 
 
 def test_graph_guardrail_block_uses_fallback() -> None:

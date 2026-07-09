@@ -14,8 +14,9 @@ It combines:
 
 Current implemented core:
 
-- **Orchestration:** guardrails, hybrid routing (rules + LLM), stub `data` / `rag` / `fallback` agents
+- **Orchestration:** guardrails, hybrid routing (rules + LLM), `data` agent (SQL/DuckDB), stub `rag` / `fallback` routing
 - **Prediction agent:** feature mapping, LLM extract → ML → LLM synthesis
+- **Data agent:** LLM SQL extract → validated DuckDB query → LLM synthesis (SQL + table in `data_query` metadata for verification)
 - Deterministic prediction response contract (LLM does not invent prediction values)
 - LangGraph flow: `START -> orchestrator -> predict | data | rag | fallback -> END`
 
@@ -119,9 +120,22 @@ Graph topology:
 START -> orchestrator -> predict | data | rag | fallback -> END
 ```
 
+Diagram (committed for README/docs):
+
+![LangGraph chat workflow](assets/chat_graph.png)
+
+Regenerate after changing `src/agents/graph.py` (requires network — Mermaid API):
+
+```bash
+uv run python scripts/regenerate_graph_png.py
+```
+
+Writes `docs/assets/chat_graph.png`. Commit the updated image with your graph changes.
+
 - `orchestrator` applies guardrails and routes to a specialist agent
 - `predict` calls `run_prediction_agent` (LLM extract → ML → synthesis)
-- `data` / `rag` are stubs until DuckDB and vector search ship
+- `data` calls `run_data_agent` (LLM SQL → validated DuckDB query → LLM synthesis)
+- `rag` is a stub until vector search ships
 - `fallback` handles guardrail blocks, low-confidence routing, and unclear requests
 - `run_chat_graph(request)` is the high-level helper used by API/UI
 
@@ -138,6 +152,7 @@ Use these scripts to verify real graph behavior (not mocked unit tests).
 |--------|-------------------|
 | `scripts/smoke_chat_graph.py` | Full path: `ChatRequest -> LangGraph -> orchestrator -> specialist agent -> ChatResponse` |
 | `scripts/smoke_prediction_agent.py` | Prediction agent only (bypasses orchestrator and graph routing) |
+| `scripts/regenerate_graph_png.py` | Refresh `docs/assets/chat_graph.png` after graph topology changes |
 
 `smoke_chat_graph.py` prints JSON with `request`, **`routing`**, `response`, and `state_error`.  
 A one-line routing summary is printed to **stderr** before the JSON.
@@ -145,8 +160,10 @@ A one-line routing summary is printed to **stderr** before the JSON.
 ### Prerequisites
 
 1. Dependencies installed (`uv sync`)
-2. For **prediction** routes: `.env` with a valid provider API key + ML artifacts (`uv run python -m ml.train`)
-3. For **data / rag / fallback** routes via smoke script: LLM key **not** required (rule-based orchestrator + stub agents)
+2. For **prediction** and **data** routes: `.env` with a valid provider API key
+3. For **prediction** routes: ML artifacts (`uv run python -m ml.train`)
+4. For **data** routes: `data/raw/patient_data.csv` on disk
+5. **rag / fallback** smoke via graph script: rule-based routing works without ML artifacts; **data** now also needs an LLM key for SQL generation
 
 `POST /chat` via API still requires an LLM key for all routes until that check is relaxed.
 
@@ -164,7 +181,8 @@ A one-line routing summary is printed to **stderr** before the JSON.
 | `response.predictions` | present for `both` prompts (`copd` + `alt`) |
 | `response.prediction.can_predict` | `true` when required features are available |
 | `response.prediction.defaults_used` | may be non-empty when optional fields are imputed |
-| `response.metadata.llm_model` | populated for prediction routes |
+| `response.data_query` | present for **data** routes (`sql`, `rows`, `row_count`) |
+| `response.metadata.llm_model` | populated for prediction and data routes |
 | `response.metadata.latency_ms` | positive number |
 
 ### Example prompts
@@ -223,7 +241,7 @@ Expected by case:
 - **t1/t2:** `state_error = null`, `routing.routed_to = prediction`, `can_predict = true`
 - **t3:** `response.predictions` contains both `copd` and `alt`
 - **t4:** clarification text or `can_predict = false` with `missing_required`
-- **t5:** `routing.routed_to = data`, no ML prediction payload; data-agent stub text
+- **t5:** `routing.routed_to = data`, `response.data_query` populated with real SQL rows
 - **t6:** `routing.routed_to = rag`, RAG stub text
 - **t7:** `routing.routed_to = fallback`, `routing.guardrail_blocked = true` on guardrail example
 
@@ -386,7 +404,7 @@ Type these prompts in the chat input:
 - `Predict COPD for smoker with poor diet and low exercise`
 - `I need both predictions for BMI 29, moderate exercise, middle income`
 - `Predict COPD` (clarification / missing fields case)
-- `Show me a SQL query for readmissions by month` (routes to data agent stub)
+- `How many patients are in each income bracket?` (routes to data agent)
 
 Expected behavior:
 
@@ -489,7 +507,7 @@ curl -s -X POST http://localhost:8000/chat \
 - `metadata.routed_to` = `"data"`
 - `metadata.route_source` = `"rules"` (keyword match)
 - `prediction` = `null`
-- `text` mentions the data agent stub
+- `data_query` contains SQL + result rows
 
 #### B) Guardrail block → `fallback`
 
@@ -586,7 +604,13 @@ Open `http://localhost:8501` → **Chat** tab. Try the same prompts as in sectio
 | Prompt | Expected `routed_to` | Notes |
 |--------|----------------------|-------|
 | `Predict ALT for a patient with BMI 30` | `prediction` | Needs LLM + ML artifacts |
-| `Show me a SQL query for readmissions by month` | `data` | Stub response for now |
+| `Show me a SQL query for readmissions by month` | `data` | Needs LLM + patient CSV; may ask for clarification (no month column) |
+| `How many patients are in each income bracket?` | `data` | Needs LLM + patient CSV |
+| `What is the average BMI for each diet quality group?` | `data` | `AVG(bmi)` + `GROUP BY diet_quality` (3 rows) |
+| `Compare readmission rates between smokers and non-smokers` | `data` | Groups by `smoker`; uses `readmitted` flag |
+| `For each exercise frequency level, show the count of patients in each COPD severity class` | `data` | Multi-column `GROUP BY`; uses `chronic_obstructive_pulmonary_disease` |
+| `What is the average number of days hospitalized for urban vs rural patients with poor diet quality?` | `data` | `WHERE` + `GROUP BY urban` |
+| `Among high-income patients, which diagnosis codes are most common?` | `data` | Filter + `GROUP BY diagnosis_code` + sort |
 | `What does the COPD guideline say about exercise?` | `rag` | Stub response for now |
 | `What medication should the patient take for COPD?` | `fallback` | Guardrail block |
 | `hello there` | `fallback` | Low confidence / clarification |

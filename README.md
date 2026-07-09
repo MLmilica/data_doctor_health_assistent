@@ -103,8 +103,13 @@ uv run streamlit run ui/app.py
 START -> orchestrator -> predict | data | rag | fallback -> END
 ```
 
+![LangGraph chat workflow](docs/assets/chat_graph.png)
+
+Regenerate after graph changes: `uv run python scripts/regenerate_graph_png.py`
+
 - `prediction` — COPD/ALT ML predictions (needs LLM + trained models)
-- `data` / `rag` — stubs for now (routing works; full agents coming in Phase 2)
+- `data` — LLM SQL → DuckDB → LLM synthesis; SQL and result table stay in the UI expander for verification (needs LLM + CSV)
+- `rag` — stub for document search (Phase 3)
 - `fallback` — guardrail blocks, unclear requests, low-confidence routing
 
 `POST /chat` currently requires an LLM API key in `.env` for all routes.

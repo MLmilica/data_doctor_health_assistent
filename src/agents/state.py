@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, cast
 
-from schemas.chat import ChatRequest, ChatResponse
+from schemas.chat import ChatRequest, ChatResponse, ChatDataQueryDetails
 from schemas.prediction import LLMPredictionExtraction, PredictionResponse
+from schemas.sql import DataQueryResult
 
 
 class AgentState(TypedDict, total=False):
@@ -39,6 +40,9 @@ class AgentState(TypedDict, total=False):
     # Single target: PredictionResponse.model_dump()
     # Both targets: {"copd": {...}, "alt": {...}}
     prediction_result: dict[str, Any]
+
+    # --- Data agent (SQL node) ---
+    data_result: dict[str, Any]
 
     # --- Output (prediction node → FastAPI) ---
     response_text: str
@@ -107,6 +111,17 @@ def set_prediction_result(
     return _merge_state(state, prediction_result=payload)
 
 
+def set_data_result(state: AgentState, result: DataQueryResult) -> AgentState:
+    return _merge_state(state, data_result=result.model_dump())
+
+
+def get_data_result(state: AgentState) -> DataQueryResult | None:
+    raw = state.get("data_result")
+    if raw is None:
+        return None
+    return DataQueryResult.model_validate(raw)
+
+
 def chat_response_from_state(state: AgentState) -> ChatResponse:
     """Map terminal AgentState to the public ChatResponse DTO."""
     session_id = state.get("session_id", "")
@@ -120,10 +135,16 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
         )
 
     prediction_result = get_prediction_result(state)
+    data_result = get_data_result(state)
+    data_query = (
+        ChatDataQueryDetails.from_data_query_result(data_result) if data_result else None
+    )
+
     if prediction_result is None:
         return ChatResponse(
             text=response_text,
             session_id=session_id,
+            data_query=data_query,
             metadata=_metadata_from_state(state),
         )
 
@@ -135,7 +156,12 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
         latency_ms=state.get("latency_ms"),
         top_global_factors=state.get("top_global_factors"),
     )
-    return response.model_copy(update={"metadata": _metadata_from_state(state)})
+    return response.model_copy(
+        update={
+            "metadata": _metadata_from_state(state),
+            "data_query": data_query,
+        }
+    )
 
 
 def _metadata_from_state(state: AgentState):

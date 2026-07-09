@@ -43,5 +43,8 @@ class Settings(BaseSettings):
     chat_max_message_chars: int = 4000
     routing_confidence_threshold: float = 0.6
 
+    # SQL / data agent
+    sql_max_rows: int = 1000
+
 
 settings = Settings()

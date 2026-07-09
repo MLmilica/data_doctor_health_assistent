@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from schemas.prediction import FeatureMappingNote, PredictionResponse, PREDICTION_DISCLAIMER
+from schemas.sql import DATA_QUERY_DISCLAIMER, DataQueryResult
 
 DEFAULT_USER_ID = "default-user"
 
@@ -64,6 +65,29 @@ class ChatPredictionDetails(BaseModel):
         )
 
 
+class ChatDataQueryDetails(BaseModel):
+    """Structured SQL output exposed to the UI."""
+
+    sql: str
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+    explanation: str | None = None
+    disclaimer: str = DATA_QUERY_DISCLAIMER
+
+    @classmethod
+    def from_data_query_result(cls, result: DataQueryResult) -> ChatDataQueryDetails:
+        return cls(
+            sql=result.sql,
+            columns=result.columns,
+            rows=result.rows,
+            row_count=result.row_count,
+            truncated=result.truncated,
+            explanation=result.explanation,
+        )
+
+
 class ChatAgentMetadata(BaseModel):
     """Runtime metadata for observability and transparency in the UI sidebar."""
 
@@ -89,6 +113,10 @@ class ChatResponse(BaseModel):
     predictions: dict[str, ChatPredictionDetails] | None = Field(
         default=None,
         description="Present when target=both (keys: copd, alt).",
+    )
+    data_query: ChatDataQueryDetails | None = Field(
+        default=None,
+        description="Present when the data agent executed a SQL query.",
     )
     metadata: ChatAgentMetadata = Field(default_factory=ChatAgentMetadata)
 

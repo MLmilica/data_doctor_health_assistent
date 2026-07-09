@@ -23,6 +23,8 @@ Routes:
 
 Rules:
 - Choose exactly one route.
+- Dataset analytics (counts, averages, groupings, distributions) -> data even if COPD/ALT column names appear.
+- prediction is only for inferring a class/value for a specific patient scenario (usually with the word predict).
 - Use confidence >= 0.8 only when intent is clear.
 - Set requires_clarification=true when the message is ambiguous and cannot be executed safely.
 - Provide a short clarification_prompt when requires_clarification is true.
@@ -45,11 +47,16 @@ _RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
         "query",
         "select ",
         "count ",
+        "show the count",
+        "for each",
         "how many",
         "average",
         "mean ",
         "sum ",
         "group by",
+        "most common",
+        "compare ",
+        "among ",
         "readmission",
         "dataset",
         "table",
@@ -72,13 +79,61 @@ _RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
 }
 
 
+_ANALYTICS_SIGNALS: tuple[str, ...] = (
+    "how many",
+    "count ",
+    "show the count",
+    "for each",
+    "average",
+    "mean ",
+    "sum ",
+    "group by",
+    "most common",
+    "compare ",
+    "among ",
+    "distribution",
+    " per ",
+    "breakdown",
+)
+
+_PREDICTION_INTENT_SIGNALS: tuple[str, ...] = (
+    "predict",
+    "prediction",
+    "estimate ",
+    "forecast",
+)
+
+
 def _keyword_score(message: str, keywords: tuple[str, ...]) -> int:
     lowered = message.lower()
     return sum(1 for keyword in keywords if keyword in lowered)
 
 
+def _explicit_prediction_intent(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in _PREDICTION_INTENT_SIGNALS)
+
+
+def _analytics_signal_count(message: str) -> int:
+    lowered = message.lower()
+    return sum(1 for signal in _ANALYTICS_SIGNALS if signal in lowered)
+
+
 def route_with_rules(message: str) -> RoutingDecision | None:
     """Fast deterministic routing for clear keyword matches."""
+    analytics_hits = _analytics_signal_count(message)
+    if analytics_hits > 0 and not _explicit_prediction_intent(message):
+        confidence = min(0.95, 0.60 + analytics_hits * 0.10)
+        return RoutingDecision(
+            route=AgentRoute.DATA,
+            confidence=confidence,
+            reasoning=(
+                f"Detected {analytics_hits} dataset analytics signal(s) "
+                "without explicit prediction intent."
+            ),
+            source="rules",
+        )
+
     scores = {route: _keyword_score(message, keywords) for route, keywords in _RULE_KEYWORDS.items()}
     best_route = max(scores, key=lambda route: scores[route])
     best_score = scores[best_route]

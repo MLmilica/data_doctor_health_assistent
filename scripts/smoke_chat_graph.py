@@ -14,7 +14,7 @@ from schemas.routing import AgentRoute
 
 _EXAMPLE_MESSAGES: dict[str, str] = {
     "prediction": "Predict ALT for a patient with BMI 30",
-    "data": "Show me a SQL query for readmissions by month",
+    "data": "How many patients are in each income bracket?",
     "rag": "What does the COPD guideline say about exercise?",
     "fallback": "What medication should the patient take for COPD?",
     "clarify": "hello there",

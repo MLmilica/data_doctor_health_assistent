@@ -98,8 +98,13 @@ def routing_llm() -> BaseChatModel:
     return _extraction_llm()
 
 
-def _synthesis_llm() -> BaseChatModel:
+def synthesis_llm() -> BaseChatModel:
+    """Higher-level model for analyst-facing prose synthesis."""
     return _chat_model(model_name=settings.llm_model_synthesis, temperature=0.2)
+
+
+def _synthesis_llm() -> BaseChatModel:
+    return synthesis_llm()
 
 
 def _parse_structured_extraction(result: Any) -> LLMPredictionExtraction:
