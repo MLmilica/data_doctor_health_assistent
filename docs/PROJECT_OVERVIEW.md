@@ -10,7 +10,7 @@ It combines:
   - `ALT` lab value regression
 - **LLM-based extraction + synthesis** around deterministic ML results
 - **LangGraph-oriented agent architecture** (prediction slice implemented first)
-- **FastAPI + Streamlit app structure** (API/UI wiring in progress)
+- **FastAPI + Streamlit UI** (prediction slice E2E)
 
 Current implemented core for the prediction slice:
 
@@ -308,4 +308,98 @@ uv run pytest tests/test_api/test_chat.py -v
 - `503` on `/chat` with missing LLM key -> configure `.env` (`LLM_PROVIDER` + provider key)
 - `degraded` on `/health` -> usually missing LLM key or ML artifacts
 - model artifact errors -> run `uv run python -m ml.train`
+
+---
+
+## Running the Streamlit UI
+
+UI entry point: `ui/app.py`
+
+The UI has two tabs:
+
+- **Chat** — sends natural-language messages to `POST /chat` (full E2E via API + LangGraph)
+- **Form (v0)** — direct ML inference from structured fields (no LLM)
+
+### Step-by-step startup
+
+**Terminal 1 — start API:**
+
+```bash
+uv run uvicorn api.main:app --reload --app-dir src
+```
+
+**Terminal 2 — start Streamlit UI:**
+
+```bash
+uv run streamlit run ui/app.py
+```
+
+**Browser:**
+
+- UI: `http://localhost:8501`
+- API docs (optional): `http://localhost:8000/docs`
+
+### Prerequisites
+
+1. Dependencies installed (`uv sync`)
+2. `.env` configured with provider API key (required for **Chat** tab)
+3. ML artifacts available (if missing: `uv run python -m ml.train`)
+
+### First run checklist
+
+1. Open `http://localhost:8501`
+2. In sidebar, keep API URL as `http://localhost:8000` (unless you changed API port)
+3. Click **Check /health**
+4. Confirm:
+   - `llm_configured: true` (for Chat tab)
+   - `ml_models_loaded: true` (for Chat + Form tab)
+5. Go to **Chat** or **Form** tab and run examples below
+
+### Chat tab examples
+
+Type these prompts in the chat input:
+
+- `Predict ALT for a patient with BMI 30`
+- `Predict COPD for smoker with poor diet and low exercise`
+- `I need both predictions for BMI 29, moderate exercise, middle income`
+- `Predict COPD` (clarification / missing fields case)
+- `Show me a SQL query for readmissions by month` (non-prediction routing case)
+
+Expected behavior:
+
+- assistant text appears in chat history
+- for prediction prompts: prediction block with value/class
+- expandable sections may show `defaults_used`, `missing_required`, `top_global_factors`
+- disclaimer shown at the bottom of prediction details
+
+### Form tab examples
+
+Form fields change by target. Required fields start empty; prediction is blocked until they are filled.
+
+**ALT example** (`alt` fields)
+
+- BMI: `30` (required — must be entered manually)
+- Optional fields (`diet_quality`, `exercise_frequency`, etc.) can be left empty or filled explicitly
+
+Open **Training-data reference values** in the Form tab to see typical values from the training dataset (informational only).
+
+Expected behavior:
+
+- result appears immediately (no LLM call)
+- single target -> one prediction block
+- `both` -> separate COPD and ALT blocks
+
+### Session controls (sidebar)
+
+- **Check /health** — verifies API readiness
+- **New session** — clears chat history and creates a new `session_id`
+
+Chat history is kept only in the current browser session (`st.session_state`), not on the server.
+
+### Common UI issues
+
+- `Could not reach API` -> API is not running, or wrong API URL in sidebar
+- `API error (503)` on Chat -> missing LLM key in `.env`
+- Form tab error about model artifacts -> run `uv run python -m ml.train`
+- Health shows `degraded` -> usually missing LLM key and/or ML artifacts
 
