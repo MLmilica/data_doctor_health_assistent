@@ -72,7 +72,8 @@ instance/
 # Internal project docs (local only)
 docs/*
 !docs/PROJECT_OVERVIEW.md
-!docs/assets/chat_graph.png 
+!docs/assets/
+!docs/assets/chat_graph.png
 
 # PyBuilder
 .pybuilder/
