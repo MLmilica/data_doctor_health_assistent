@@ -76,17 +76,19 @@ def test_run_prediction_agent_alt_success(
 
 
 @patch("agents.subagents.prediction_agent.extract_with_llm")
-def test_run_prediction_agent_non_prediction_request(mock_extract: Any) -> None:
+def test_run_prediction_agent_missing_target(mock_extract: Any) -> None:
     mock_extract.return_value = LLMPredictionExtraction(
-        is_prediction_request=False,
-        assistant_message="I only handle COPD/ALT predictions.",
+        is_prediction_request=True,
+        target=None,
+        assistant_message="Do you want COPD, ALT, or both?",
     )
 
-    state = initial_state_from_chat_request(ChatRequest(message="How many patients are readmitted?"))
+    state = initial_state_from_chat_request(ChatRequest(message="Predict something for this patient"))
     result_state = run_prediction_agent(state)
 
     assert "prediction_result" not in result_state
-    assert result_state.get("response_text") == "I only handle COPD/ALT predictions."
+    assert result_state.get("response_text") == "Do you want COPD, ALT, or both?"
+    assert "prediction" in (result_state.get("agent_steps") or [])
 
 
 @patch("agents.subagents.prediction_agent.extract_with_llm")

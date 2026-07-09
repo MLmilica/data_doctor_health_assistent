@@ -20,6 +20,7 @@ from schemas.prediction import (
     PredictionResponse,
     PredictionTarget,
 )
+from schemas.routing import AgentRoute, RoutingDecision
 
 __all__ = [
     "ChatAgentMetadata",
@@ -36,4 +37,6 @@ __all__ = [
     "PredictionRequest",
     "PredictionResponse",
     "PredictionTarget",
+    "AgentRoute",
+    "RoutingDecision",
 ]

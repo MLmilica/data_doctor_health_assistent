@@ -21,6 +21,17 @@ class AgentState(TypedDict, total=False):
     session_id: str
     user_id: str
 
+    # --- Orchestrator routing ---
+    route: str
+    route_confidence: float
+    route_reasoning: str
+    route_source: str
+    requires_clarification: bool
+    clarification_prompt: str | None
+    guardrail_blocked: bool
+    guardrail_reason: str | None
+    agent_steps: list[str]
+
     # --- LLM extraction (prediction node) ---
     extraction: dict[str, Any]
 
@@ -45,6 +56,13 @@ def _merge_state(state: AgentState, **updates: Any) -> AgentState:
     merged = dict(state)
     merged.update(updates)
     return cast(AgentState, merged)
+
+
+def append_agent_step(state: AgentState, step: str) -> AgentState:
+    """Append a completed graph step for observability and future multi-step routing."""
+    steps = list(state.get("agent_steps") or [])
+    steps.append(step)
+    return _merge_state(state, agent_steps=steps)
 
 
 def initial_state_from_chat_request(request: ChatRequest) -> AgentState:
@@ -109,7 +127,7 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
             metadata=_metadata_from_state(state),
         )
 
-    return ChatResponse.from_prediction_results(
+    response = ChatResponse.from_prediction_results(
         text=response_text,
         session_id=session_id,
         result=prediction_result,
@@ -117,12 +135,19 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
         latency_ms=state.get("latency_ms"),
         top_global_factors=state.get("top_global_factors"),
     )
+    return response.model_copy(update={"metadata": _metadata_from_state(state)})
 
 
 def _metadata_from_state(state: AgentState):
     from schemas.chat import ChatAgentMetadata
 
+    routed_to = state.get("route")
     return ChatAgentMetadata(
+        agent=routed_to or "orchestrator",
+        routed_to=routed_to,
+        route_confidence=state.get("route_confidence"),
+        route_source=state.get("route_source"),
+        guardrail_blocked=bool(state.get("guardrail_blocked")),
         llm_model=state.get("llm_model"),
         latency_ms=state.get("latency_ms"),
     )

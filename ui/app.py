@@ -99,6 +99,20 @@ def _render_prediction_details(details: ChatPredictionDetails, *, label: str | N
     st.caption(details.disclaimer)
 
 
+def _routing_metadata_parts(response: ChatResponse) -> list[str]:
+    meta = response.metadata
+    parts: list[str] = []
+    if meta.routed_to:
+        parts.append(f"routed: {meta.routed_to}")
+    if meta.route_confidence is not None:
+        parts.append(f"confidence: {meta.route_confidence:.0%}")
+    if meta.route_source:
+        parts.append(f"via {meta.route_source}")
+    if meta.guardrail_blocked:
+        parts.append("guardrail blocked")
+    return parts
+
+
 def _render_chat_response(response: ChatResponse) -> None:
     st.markdown(response.text)
 
@@ -109,12 +123,12 @@ def _render_chat_response(response: ChatResponse) -> None:
         for key, details in response.predictions.items():
             _render_prediction_details(details, label=key)
 
-    if response.metadata.llm_model or response.metadata.latency_ms is not None:
-        meta_parts: list[str] = []
-        if response.metadata.llm_model:
-            meta_parts.append(f"model: {response.metadata.llm_model}")
-        if response.metadata.latency_ms is not None:
-            meta_parts.append(f"latency: {response.metadata.latency_ms:.0f} ms")
+    meta_parts = _routing_metadata_parts(response)
+    if response.metadata.llm_model:
+        meta_parts.append(f"model: {response.metadata.llm_model}")
+    if response.metadata.latency_ms is not None:
+        meta_parts.append(f"latency: {response.metadata.latency_ms:.0f} ms")
+    if meta_parts:
         st.caption(" | ".join(meta_parts))
 
 
@@ -150,15 +164,25 @@ def _render_sidebar() -> None:
 
     st.sidebar.divider()
     st.sidebar.caption(f"Session ID: `{st.session_state.session_id}`")
+
+    last_routing = st.session_state.get("last_routing")
+    if last_routing:
+        st.sidebar.markdown("**Last routing**")
+        st.sidebar.json(last_routing)
+
     if st.sidebar.button("New session"):
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = []
+        st.session_state.last_routing = None
         st.rerun()
 
 
 def _chat_tab() -> None:
     st.subheader("Chat")
-    st.caption("Natural-language requests routed through FastAPI → LangGraph → prediction agent.")
+    st.caption(
+        "Natural-language requests via FastAPI → LangGraph orchestrator → specialist agents "
+        "(prediction, data, rag, fallback)."
+    )
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -167,7 +191,7 @@ def _chat_tab() -> None:
             else:
                 st.markdown(message["content"])
 
-    prompt = st.chat_input("Ask for a COPD or ALT prediction...")
+    prompt = st.chat_input("Ask for a prediction, SQL query, or document search...")
     if not prompt:
         return
 
@@ -185,6 +209,12 @@ def _chat_tab() -> None:
         st.session_state.messages.append(
             {"role": "assistant", "content": response.text, "response": response},
         )
+        st.session_state.last_routing = {
+            "routed_to": response.metadata.routed_to,
+            "route_confidence": response.metadata.route_confidence,
+            "route_source": response.metadata.route_source,
+            "guardrail_blocked": response.metadata.guardrail_blocked,
+        }
         st.rerun()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text

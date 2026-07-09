@@ -118,13 +118,17 @@ ChatRequest -> initial AgentState -> graph.invoke() -> final AgentState -> ChatR
 Graph topology:
 
 ```text
-START -> predict -> END
+START -> orchestrator -> predict | data | rag | fallback -> END
 ```
 
-- `predict` node calls `run_prediction_agent`
+- `orchestrator` applies guardrails and routes to a specialist agent
+- `predict` calls `run_prediction_agent` (LLM extract → ML → synthesis)
+- `data` / `rag` are stubs until DuckDB and vector search ship
+- `fallback` handles guardrail blocks, low-confidence routing, and unclear requests
 - `run_chat_graph(request)` is the high-level helper used by API/UI
 
-For runtime smoke testing, see **Runtime Smoke Tests** at the end of this document.
+For orchestration testing, see **Testing Initial Orchestration** at the end of this document.
+For runtime smoke testing, see **Runtime Smoke Tests** below.
 
 ---
 
@@ -202,7 +206,7 @@ Expected by case:
 - **t1/t2:** `state_error = null`, prediction present, `can_predict = true`
 - **t3:** `response.predictions` contains both `copd` and `alt`
 - **t4:** clarification text or `can_predict = false` with `missing_required`
-- **t5:** no ML prediction payload; out-of-scope style response text
+- **t5:** `metadata.routed_to = data`, no ML prediction payload; data-agent stub response text
 
 ### Test `smoke_prediction_agent.py`
 
@@ -363,7 +367,7 @@ Type these prompts in the chat input:
 - `Predict COPD for smoker with poor diet and low exercise`
 - `I need both predictions for BMI 29, moderate exercise, middle income`
 - `Predict COPD` (clarification / missing fields case)
-- `Show me a SQL query for readmissions by month` (non-prediction routing case)
+- `Show me a SQL query for readmissions by month` (routes to data agent stub)
 
 Expected behavior:
 
@@ -402,4 +406,163 @@ Chat history is kept only in the current browser session (`st.session_state`), n
 - `API error (503)` on Chat -> missing LLM key in `.env`
 - Form tab error about model artifacts -> run `uv run python -m ml.train`
 - Health shows `degraded` -> usually missing LLM key and/or ML artifacts
+
+---
+
+## Testing Initial Orchestration
+
+The orchestration slice routes each `/chat` message through guardrails and the orchestrator before calling a specialist agent.
+
+```text
+START -> orchestrator -> predict | data | rag | fallback -> END
+```
+
+Check `response.metadata` for routing transparency:
+
+| Field | Meaning |
+|-------|---------|
+| `routed_to` | Specialist that handled the message (`prediction`, `data`, `rag`, `fallback`) |
+| `route_confidence` | Orchestrator confidence (0–1) |
+| `route_source` | `rules`, `llm`, or `guardrail` |
+| `guardrail_blocked` | `true` when input was blocked before routing |
+
+In Streamlit, routing also appears under each assistant reply and in the sidebar **Last routing** panel.
+
+### 1. Automated tests (no LLM required)
+
+Fastest way to verify routing logic:
+
+```bash
+uv run pytest tests/test_agents/test_graph.py tests/test_agents/test_orchestrator.py tests/test_agents/test_guardrails.py -v
+```
+
+These tests mock the prediction agent and exercise rule-based routing, guardrails, and graph wiring.
+
+### 2. Manual API tests (real E2E)
+
+**Prerequisites:** API running (`uv run uvicorn api.main:app --reload --app-dir src`).
+
+**Important:** `POST /chat` currently requires an LLM API key in `.env` for all routes, even data/rag/fallback stubs. Without a key you get `503`.
+
+Check readiness first:
+
+```bash
+curl -s http://localhost:8000/health | python3 -m json.tool
+```
+
+#### A) SQL message → `data` stub
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Show me a SQL query for readmissions by month","session_id":"test-data"}' \
+  | python3 -m json.tool
+```
+
+**Expected:**
+
+- `metadata.routed_to` = `"data"`
+- `metadata.route_source` = `"rules"` (keyword match)
+- `prediction` = `null`
+- `text` mentions the data agent stub
+
+#### B) Guardrail block → `fallback`
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What medication should the patient take for COPD?","session_id":"test-guard"}' \
+  | python3 -m json.tool
+```
+
+**Expected:**
+
+- `metadata.routed_to` = `"fallback"`
+- `metadata.guardrail_blocked` = `true`
+- `prediction` = `null`
+- `text` explains the request is out of scope
+
+#### C) Document search → `rag` stub
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What does the COPD guideline say about exercise?","session_id":"test-rag"}' \
+  | python3 -m json.tool
+```
+
+**Expected:**
+
+- `metadata.routed_to` = `"rag"`
+- `text` mentions the RAG agent stub
+
+#### D) Prediction → `prediction` agent
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Predict ALT for a patient with BMI 30","session_id":"test-pred"}' \
+  | python3 -m json.tool
+```
+
+**Expected:**
+
+- `metadata.routed_to` = `"prediction"`
+- `prediction` object present with `can_predict`, `prediction` value, etc.
+
+**Also requires:** `llm_configured: true` and `ml_models_loaded: true` on `/health`.
+
+### 3. Swagger UI (click-through)
+
+1. Open `http://localhost:8000/docs`
+2. Expand `POST /chat` → **Try it out**
+3. Example body:
+
+```json
+{
+  "message": "Show me a SQL query for readmissions by month",
+  "session_id": "swagger-1"
+}
+```
+
+4. **Execute** and inspect `metadata.routed_to` in the response.
+
+### 4. Streamlit UI
+
+**Terminal 1 — API:**
+
+```bash
+uv run uvicorn api.main:app --reload --app-dir src
+```
+
+**Terminal 2 — UI:**
+
+```bash
+uv run streamlit run ui/app.py
+```
+
+Open `http://localhost:8501` → **Chat** tab. Try the same prompts as in section 2.
+
+**What to look for:**
+
+- Under each assistant reply: `routed: data | confidence: … | via rules`
+- Sidebar **Last routing**: JSON with `routed_to`, `route_confidence`, `route_source`, `guardrail_blocked`
+
+### What works without an LLM key?
+
+| Test method | Works without LLM key? |
+|-------------|------------------------|
+| `pytest` (orchestrator/graph/guardrails) | **Yes** |
+| `curl` / Swagger / Streamlit Chat | **No** — `/chat` returns `503` without provider credentials |
+| Streamlit **Form** tab | **Yes** — direct ML, no LLM |
+
+### Quick reference — example prompts
+
+| Prompt | Expected `routed_to` | Notes |
+|--------|----------------------|-------|
+| `Predict ALT for a patient with BMI 30` | `prediction` | Needs LLM + ML artifacts |
+| `Show me a SQL query for readmissions by month` | `data` | Stub response for now |
+| `What does the COPD guideline say about exercise?` | `rag` | Stub response for now |
+| `What medication should the patient take for COPD?` | `fallback` | Guardrail block |
+| `hello there` | `fallback` | Low confidence / clarification |
 

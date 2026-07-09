@@ -67,11 +67,14 @@ class ChatPredictionDetails(BaseModel):
 class ChatAgentMetadata(BaseModel):
     """Runtime metadata for observability and transparency in the UI sidebar."""
 
-    agent: str = "prediction"
+    agent: str = "orchestrator"
     extraction_method: Literal["llm"] = "llm"
     llm_model: str | None = None
     latency_ms: float | None = None
-    routed_to: str | None = "prediction"
+    routed_to: str | None = None
+    route_confidence: float | None = None
+    route_source: str | None = None
+    guardrail_blocked: bool = False
 
 
 class ChatResponse(BaseModel):

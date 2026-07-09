@@ -11,7 +11,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models import BaseChatModel
 
-from agents.state import _merge_state, AgentState, set_extraction, set_prediction_result
+from agents.state import _merge_state, AgentState, append_agent_step, set_extraction, set_prediction_result
 from config import settings
 from ml.feature_mapper import run_prediction
 from schemas.prediction import (
@@ -21,13 +21,10 @@ from schemas.prediction import (
     PredictionResponse,
 )
 
-NON_PREDICTION_MESSAGE = (
-    "I can currently help with COPD and ALT predictions only. "
-    "Ask something like: \"Predict ALT for a patient with BMI 30\" or "
-    "\"Predict COPD for good diet and moderate exercise.\""
-)
-
 EXTRACTION_SYSTEM_PROMPT = """You extract structured patient features for ML prediction from user messages.
+
+The orchestrator has already routed this message to the prediction agent.
+Your job is feature extraction only — not intent classification.
 
 Targets:
 - copd: chronic obstructive pulmonary disease severity class (A/B/C/D)
@@ -39,9 +36,10 @@ bmi, diet_quality, exercise_frequency, income_bracket, urban, diagnosis_code,
 smoker, readmitted, albumin_globulin_ratio, sex
 
 Rules:
-- Set is_prediction_request=false for SQL, charts, documents, or general medical questions.
-- For prediction requests, set target and populate features mentioned in the message.
-- Use assistant_message only when clarification is needed or the request is out of scope.
+- Always set is_prediction_request=true.
+- Populate target when inferable; use null only when the user did not specify COPD, ALT, or both.
+- Populate features mentioned in the message; leave others null.
+- Use assistant_message only when target is unclear and you need clarification.
 """
 
 SYNTHESIS_SYSTEM_PROMPT = """You format clinical analytics prototype replies for an analyst audience.
@@ -93,6 +91,11 @@ def _chat_model(*, model_name: str, temperature: float) -> BaseChatModel:
 
 def _extraction_llm() -> BaseChatModel:
     return _chat_model(model_name=settings.llm_model_routing, temperature=0)
+
+
+def routing_llm() -> BaseChatModel:
+    """Low-temperature model shared by orchestrator routing and prediction extraction."""
+    return _extraction_llm()
 
 
 def _synthesis_llm() -> BaseChatModel:
@@ -222,26 +225,18 @@ def run_prediction_agent(state: AgentState) -> AgentState:
         extraction = extract_with_llm(user_message)
         state = set_extraction(state, extraction)
 
-        if not extraction.is_prediction_request:
-            response_text = extraction.assistant_message or NON_PREDICTION_MESSAGE
-            return _merge_state(
-                state,
-                response_text=response_text,
-                llm_model=llm_models,
-                latency_ms=round((time.perf_counter() - started) * 1000, 2),
-            )
-
         if extraction.target is None:
             response_text = (
                 extraction.assistant_message
                 or "Please specify whether you want a COPD, ALT, or both predictions."
             )
-            return _merge_state(
+            updated = _merge_state(
                 state,
                 response_text=response_text,
                 llm_model=llm_models,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
             )
+            return append_agent_step(updated, "prediction")
 
         request = PredictionRequest(
             target=extraction.target,
@@ -265,13 +260,14 @@ def run_prediction_agent(state: AgentState) -> AgentState:
             )
 
         state = set_prediction_result(state, prediction_result)
-        return _merge_state(
+        updated = _merge_state(
             state,
             response_text=response_text,
             llm_model=llm_models,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             top_global_factors=top_global_factors,
         )
+        return append_agent_step(updated, "prediction")
 
     except Exception as exc:
         return _merge_state(

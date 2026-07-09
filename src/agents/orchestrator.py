@@ -1,1 +1,232 @@
-"""Orchestrator routing. TODO: implement on Day 4."""
+"""Orchestrator — guardrails + hybrid routing to specialist agents."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from agents.guardrails import check_input_guardrails
+from agents.state import AgentState, _merge_state, append_agent_step
+from agents.subagents.prediction_agent import configure_llm_environment, require_llm_api_key, routing_llm
+from config import settings
+from schemas.routing import AgentRoute, LLMRoutingExtraction, RoutingDecision
+
+ORCHESTRATOR_SYSTEM_PROMPT = """You route analyst chat messages to the correct specialist agent.
+
+Routes:
+- prediction: COPD/ALT ML predictions from patient attributes (BMI, diet, exercise, smoker, etc.)
+- data: SQL/analytics questions over the patient CSV dataset (counts, averages, trends, readmissions)
+- rag: search clinical documents, guidelines, policies; citation-style questions
+- fallback: greetings, chit-chat, unrelated topics, or requests that do not fit the above
+
+Rules:
+- Choose exactly one route.
+- Use confidence >= 0.8 only when intent is clear.
+- Set requires_clarification=true when the message is ambiguous and cannot be executed safely.
+- Provide a short clarification_prompt when requires_clarification is true.
+- Do NOT route clinical diagnosis or treatment advice to prediction; use fallback instead.
+"""
+
+_RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
+    AgentRoute.PREDICTION: (
+        "predict",
+        "prediction",
+        "copd",
+        " alt",
+        "alt ",
+        "bmi",
+        "severity class",
+        "alanine",
+    ),
+    AgentRoute.DATA: (
+        "sql",
+        "query",
+        "select ",
+        "count ",
+        "how many",
+        "average",
+        "mean ",
+        "sum ",
+        "group by",
+        "readmission",
+        "dataset",
+        "table",
+        "duckdb",
+        "by month",
+        "by diet",
+    ),
+    AgentRoute.RAG: (
+        "document",
+        "guideline",
+        "policy",
+        "search doc",
+        "according to",
+        "what does the",
+        "what does our",
+        "cite",
+        "citation",
+        "clinical note",
+    ),
+}
+
+
+def _keyword_score(message: str, keywords: tuple[str, ...]) -> int:
+    lowered = message.lower()
+    return sum(1 for keyword in keywords if keyword in lowered)
+
+
+def route_with_rules(message: str) -> RoutingDecision | None:
+    """Fast deterministic routing for clear keyword matches."""
+    scores = {route: _keyword_score(message, keywords) for route, keywords in _RULE_KEYWORDS.items()}
+    best_route = max(scores, key=lambda route: scores[route])
+    best_score = scores[best_route]
+    if best_score == 0:
+        return None
+
+    tied_routes = [route for route, score in scores.items() if score == best_score]
+    if len(tied_routes) > 1:
+        return None
+
+    confidence = min(0.95, 0.55 + best_score * 0.15)
+    return RoutingDecision(
+        route=best_route,
+        confidence=confidence,
+        reasoning=f"Matched {best_score} keyword(s) for {best_route.value}.",
+        source="rules",
+    )
+
+
+def route_with_llm(message: str) -> RoutingDecision:
+    """LLM routing for ambiguous messages."""
+    configure_llm_environment()
+    llm = routing_llm().with_structured_output(LLMRoutingExtraction)
+    result = llm.invoke(
+        [
+            SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
+            HumanMessage(content=message),
+        ]
+    )
+    if isinstance(result, LLMRoutingExtraction):
+        extraction = result
+    else:
+        extraction = LLMRoutingExtraction.model_validate(result)
+
+    return RoutingDecision(
+        route=extraction.route,
+        confidence=extraction.confidence,
+        reasoning=extraction.reasoning,
+        requires_clarification=extraction.requires_clarification,
+        clarification_prompt=extraction.clarification_prompt,
+        source="llm",
+    )
+
+
+def decide_route(message: str, *, allow_llm: bool = True) -> RoutingDecision:
+    """Pick a route using rules first, then optional LLM fallback."""
+    ruled = route_with_rules(message)
+    if ruled is not None and ruled.confidence >= settings.routing_confidence_threshold:
+        return ruled
+
+    if allow_llm:
+        try:
+            require_llm_api_key()
+            return route_with_llm(message)
+        except ValueError:
+            pass
+
+    if ruled is not None:
+        return ruled
+
+    return RoutingDecision(
+        route=AgentRoute.FALLBACK,
+        confidence=0.4,
+        reasoning="No clear keyword match and LLM routing unavailable.",
+        requires_clarification=True,
+        clarification_prompt=(
+            "I am not sure what you need. Do you want a COPD/ALT prediction, "
+            "a SQL analytics query over the patient dataset, or a document search?"
+        ),
+        source="rules",
+    )
+
+
+def _apply_low_confidence(decision: RoutingDecision) -> RoutingDecision:
+    if decision.confidence >= settings.routing_confidence_threshold:
+        return decision
+    if decision.requires_clarification:
+        return RoutingDecision(
+            route=AgentRoute.FALLBACK,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+            requires_clarification=True,
+            clarification_prompt=decision.clarification_prompt
+            or "Could you clarify whether you need a prediction, a dataset query, or a document search?",
+            source=decision.source,
+        )
+    return RoutingDecision(
+        route=AgentRoute.FALLBACK,
+        confidence=decision.confidence,
+        reasoning=f"Low routing confidence ({decision.confidence:.2f}): {decision.reasoning}",
+        requires_clarification=True,
+        clarification_prompt=(
+            "I am not confident about the best agent for this request. "
+            "Please rephrase as a prediction, SQL/data question, or document search."
+        ),
+        source=decision.source,
+    )
+
+
+def routing_to_state_updates(decision: RoutingDecision) -> dict[str, Any]:
+    """Map a routing decision onto AgentState fields."""
+    return {
+        "route": decision.route.value,
+        "route_confidence": decision.confidence,
+        "route_reasoning": decision.reasoning,
+        "route_source": decision.source,
+        "requires_clarification": decision.requires_clarification,
+        "clarification_prompt": decision.clarification_prompt,
+    }
+
+
+def run_orchestrator(state: AgentState) -> AgentState:
+    """
+    LangGraph node: guardrails → route decision → write routing fields to state.
+
+    Does not produce user-facing response text; specialist/fallback nodes do that.
+    """
+    started = time.perf_counter()
+    user_message = state.get("user_message", "")
+    guardrail = check_input_guardrails(user_message)
+
+    if not guardrail.allowed:
+        decision = RoutingDecision(
+            route=AgentRoute.FALLBACK,
+            confidence=1.0,
+            reasoning="Input blocked by guardrails.",
+            source="guardrail",
+        )
+        updated = _merge_state(
+            state,
+            user_message=guardrail.sanitized_message,
+            guardrail_blocked=True,
+            guardrail_reason=guardrail.blocked_reason,
+            **routing_to_state_updates(decision),
+        )
+        return append_agent_step(updated, f"orchestrator:{decision.route.value}")
+
+    decision = _apply_low_confidence(decide_route(guardrail.sanitized_message))
+    updated = _merge_state(
+        state,
+        user_message=guardrail.sanitized_message,
+        guardrail_blocked=False,
+        guardrail_reason=None,
+        **routing_to_state_updates(decision),
+    )
+    updated = append_agent_step(updated, f"orchestrator:{decision.route.value}")
+    latency = state.get("latency_ms")
+    orchestrator_ms = round((time.perf_counter() - started) * 1000, 2)
+    if latency is None:
+        updated["latency_ms"] = orchestrator_ms
+    return updated

@@ -1,4 +1,4 @@
-"""LangGraph graph — minimal prediction slice (START -> predict -> END)."""
+"""LangGraph graph — orchestrator routes to specialist agents."""
 
 from __future__ import annotations
 
@@ -6,23 +6,58 @@ from typing import cast
 
 from langgraph.graph import END, START, StateGraph
 
+from agents.orchestrator import run_orchestrator
 from agents.state import (
     AgentState,
     chat_response_from_state,
     initial_state_from_chat_request,
 )
+from agents.subagents.data_agent import run_data_agent
+from agents.subagents.fallback_agent import run_fallback_agent
 from agents.subagents.prediction_agent import run_prediction_agent
+from agents.subagents.rag_agent import run_rag_agent
 from schemas.chat import ChatRequest, ChatResponse
+from schemas.routing import AgentRoute
 
-PREDICT_NODE = "predict"
+ORCHESTRATOR_NODE = "orchestrator"
+PREDICT_NODE = AgentRoute.PREDICTION.value
+DATA_NODE = AgentRoute.DATA.value
+RAG_NODE = AgentRoute.RAG.value
+FALLBACK_NODE = AgentRoute.FALLBACK.value
+
+
+def _route_selector(state: AgentState) -> str:
+    """Read orchestrator route and map to the next graph node."""
+    route = state.get("route", AgentRoute.FALLBACK.value)
+    if route in {PREDICT_NODE, DATA_NODE, RAG_NODE, FALLBACK_NODE}:
+        return route
+    return FALLBACK_NODE
 
 
 def build_graph():
-    """Compile the prediction-only graph used by /chat."""
+    """Compile the orchestrated multi-agent graph used by /chat."""
     builder = StateGraph(AgentState)
+    builder.add_node(ORCHESTRATOR_NODE, run_orchestrator)
     builder.add_node(PREDICT_NODE, run_prediction_agent)
-    builder.add_edge(START, PREDICT_NODE)
+    builder.add_node(DATA_NODE, run_data_agent)
+    builder.add_node(RAG_NODE, run_rag_agent)
+    builder.add_node(FALLBACK_NODE, run_fallback_agent)
+
+    builder.add_edge(START, ORCHESTRATOR_NODE)
+    builder.add_conditional_edges(
+        ORCHESTRATOR_NODE,
+        _route_selector,
+        {
+            PREDICT_NODE: PREDICT_NODE,
+            DATA_NODE: DATA_NODE,
+            RAG_NODE: RAG_NODE,
+            FALLBACK_NODE: FALLBACK_NODE,
+        },
+    )
     builder.add_edge(PREDICT_NODE, END)
+    builder.add_edge(DATA_NODE, END)
+    builder.add_edge(RAG_NODE, END)
+    builder.add_edge(FALLBACK_NODE, END)
     return builder.compile()
 
 

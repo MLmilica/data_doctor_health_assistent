@@ -39,5 +39,9 @@ class Settings(BaseSettings):
     langchain_api_key: str = Field(default="", validation_alias="LANGCHAIN_API_KEY")
     langchain_project: str = Field(default="data-doctor", validation_alias="LANGCHAIN_PROJECT")
 
+    # Orchestrator / guardrails
+    chat_max_message_chars: int = 4000
+    routing_confidence_threshold: float = 0.6
+
 
 settings = Settings()
