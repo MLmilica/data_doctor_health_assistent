@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import joblib
 import numpy as np
@@ -132,10 +132,10 @@ def train_models(csv_path: Path | None = None) -> dict[str, Any]:
     with PatientDataLoader(csv_path=csv_path or settings.patient_csv_path) as loader:
         df = loader.get_dataframe().copy()
 
-    X_copd = df[COPD_FEATURE_COLS]
-    y_copd = df[COPD_TARGET]
-    X_alt = df[ALT_FEATURE_COLS]
-    y_alt = df[ALT_TARGET]
+    X_copd = cast(pd.DataFrame, df[COPD_FEATURE_COLS])
+    y_copd = cast(pd.Series, df[COPD_TARGET])
+    X_alt = cast(pd.DataFrame, df[ALT_FEATURE_COLS])
+    y_alt = cast(pd.Series, df[ALT_TARGET])
 
     label_encoder = fit_copd_label_encoder(y_copd)
 
@@ -153,10 +153,12 @@ def train_models(csv_path: Path | None = None) -> dict[str, Any]:
         random_state=RANDOM_STATE,
     )
 
-    y_copd_train_enc = label_encoder.transform(y_copd_train.astype(str))
+    y_copd_train_series = cast(pd.Series, y_copd_train)
+    y_copd_train_enc = label_encoder.transform(y_copd_train_series.astype(str))
     copd_sample_weight = compute_sample_weight(class_weight="balanced", y=y_copd_train)
 
-    copd_pipeline = _build_copd_pipeline(label_encoder.classes_)
+    label_classes = cast(np.ndarray, label_encoder.classes_)
+    copd_pipeline = _build_copd_pipeline(label_classes)
     copd_pipeline.fit(X_copd_train, y_copd_train_enc, model__sample_weight=copd_sample_weight)
     copd_pred_test_enc = copd_pipeline.predict(X_copd_test)
     copd_pred_test = label_encoder.inverse_transform(copd_pred_test_enc.astype(int))
@@ -177,7 +179,7 @@ def train_models(csv_path: Path | None = None) -> dict[str, Any]:
     # Refit on full dataset for deployment artifacts
     y_copd_full_enc = label_encoder.transform(y_copd.astype(str))
     copd_sample_weight_full = compute_sample_weight(class_weight="balanced", y=y_copd)
-    final_copd_pipeline = _build_copd_pipeline(label_encoder.classes_)
+    final_copd_pipeline = _build_copd_pipeline(label_classes)
     final_copd_pipeline.fit(
         X_copd,
         y_copd_full_enc,

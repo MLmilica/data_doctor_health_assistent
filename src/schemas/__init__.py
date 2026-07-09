@@ -1,5 +1,12 @@
 """Pydantic schemas."""
 
+from schemas.chat import (
+    ChatAgentMetadata,
+    ChatPredictionDetails,
+    ChatRequest,
+    ChatResponse,
+    HealthResponse,
+)
 from schemas.data import (
     ColumnProfile,
     ColumnSchema,
@@ -7,6 +14,7 @@ from schemas.data import (
     DatasetSchema,
 )
 from schemas.prediction import (
+    LLMPredictionExtraction,
     PatientFeatures,
     PredictionRequest,
     PredictionResponse,
@@ -14,10 +22,16 @@ from schemas.prediction import (
 )
 
 __all__ = [
+    "ChatAgentMetadata",
+    "ChatPredictionDetails",
+    "ChatRequest",
+    "ChatResponse",
     "ColumnProfile",
     "ColumnSchema",
     "DataProfile",
     "DatasetSchema",
+    "HealthResponse",
+    "LLMPredictionExtraction",
     "PatientFeatures",
     "PredictionRequest",
     "PredictionResponse",

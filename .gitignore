@@ -70,7 +70,8 @@ instance/
 .scrapy
 
 # Internal project docs (local only)
-docs/
+docs/*
+!docs/PROJECT_OVERVIEW.md
 
 # PyBuilder
 .pybuilder/

@@ -1,7 +1,9 @@
 """Application configuration and paths."""
 
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,14 +25,19 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:8000"
 
     # LLM
-    openai_api_key: str = ""
+    llm_provider: Literal["openai", "anthropic"] = Field(
+        default="openai",
+        validation_alias="LLM_PROVIDER",
+    )
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
     llm_model_routing: str = "gpt-4o-mini"
     llm_model_synthesis: str = "gpt-4o"
 
     # LangSmith
-    langchain_tracing_v2: bool = False
-    langchain_api_key: str = ""
-    langchain_project: str = "data-doctor"
+    langchain_tracing_v2: bool = Field(default=False, validation_alias="LANGCHAIN_TRACING_V2")
+    langchain_api_key: str = Field(default="", validation_alias="LANGCHAIN_API_KEY")
+    langchain_project: str = Field(default="data-doctor", validation_alias="LANGCHAIN_PROJECT")
 
 
 settings = Settings()

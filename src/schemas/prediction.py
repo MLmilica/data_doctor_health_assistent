@@ -58,3 +58,36 @@ class PredictionResponse(BaseModel):
     class_probabilities: dict[str, float] | None = None
     mapping_notes: list[FeatureMappingNote] = Field(default_factory=list)
     disclaimer: str = PREDICTION_DISCLAIMER
+
+
+class LLMPredictionExtraction(BaseModel):
+    """
+    Structured output from the LLM when parsing a user chat message.
+
+    This slice always uses LLM extraction (no rule-based fallback).
+    The Prediction Agent binds this schema via LangChain structured output.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    is_prediction_request: bool = Field(
+        description=(
+            "True when the user asks for COPD and/or ALT prediction. "
+            "False for unrelated questions (SQL, documents, general chat)."
+        ),
+    )
+    target: PredictionTarget | None = Field(
+        default=None,
+        description="copd, alt, or both when is_prediction_request is true.",
+    )
+    features: PatientFeatures = Field(
+        default_factory=PatientFeatures,
+        description="Patient attributes extracted from the message (nulls allowed).",
+    )
+    assistant_message: str | None = Field(
+        default=None,
+        description=(
+            "Optional short reply when not a prediction request, or when "
+            "clarification is needed before inference."
+        ),
+    )

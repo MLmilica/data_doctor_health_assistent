@@ -84,14 +84,24 @@ uv run streamlit run ui/app.py
 
 ## Configuration
 
-Optional `.env` file in the project root:
+Create `.env` from the example file:
+
+```bash
+cp .env.example .env
+```
+
+Then fill in values in `.env`:
 
 ```env
+LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=...
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=...
 LANGCHAIN_PROJECT=data-doctor
 ```
+
+Set `LLM_PROVIDER` to `openai` or `anthropic`. The app reads the matching key automatically.
 
 Paths are configured in `src/config.py` (defaults: `data/raw/`, `data/documents/`, `artifacts/`).
 

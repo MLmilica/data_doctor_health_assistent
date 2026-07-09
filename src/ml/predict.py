@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, cast
 
 import joblib
 import pandas as pd
@@ -144,9 +144,13 @@ def predict_copd(raw_features: Mapping[str, Any]) -> PredictionResult:
     model = pipeline.named_steps["model"]
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(pipeline.named_steps["prep"].transform(X))[0]
+        raw_labels = cast(Iterable[Any], label_encoder.classes_)
+        raw_scores = cast(Iterable[Any], proba)
+        labels = [str(label) for label in raw_labels]
+        scores = [float(score) for score in raw_scores]
         class_probabilities = {
-            str(label): float(score)
-            for label, score in zip(label_encoder.classes_, proba, strict=True)
+            label: score
+            for label, score in zip(labels, scores, strict=True)
         }
 
     return _to_result(

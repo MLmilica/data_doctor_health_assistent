@@ -1,9 +1,128 @@
-"""LangGraph agent state. TODO: implement on Day 4."""
+"""LangGraph agent state — shared clipboard for one chat request."""
 
-from typing import TypedDict
+from __future__ import annotations
+
+from typing import Any, TypedDict, cast
+
+from schemas.chat import ChatRequest, ChatResponse
+from schemas.prediction import LLMPredictionExtraction, PredictionResponse
 
 
 class AgentState(TypedDict, total=False):
-    """Shared state passed between LangGraph nodes."""
+    """
+    Shared state merged between LangGraph nodes for a single /chat invocation.
 
-    pass
+    Nodes read what they need and return partial updates (dict merge).
+    Pydantic models are stored as plain dicts for LangGraph compatibility.
+    """
+
+    # --- Input (FastAPI → graph) ---
+    user_message: str
+    session_id: str
+    user_id: str
+
+    # --- LLM extraction (prediction node) ---
+    extraction: dict[str, Any]
+
+    # --- Inference (prediction node) ---
+    # Single target: PredictionResponse.model_dump()
+    # Both targets: {"copd": {...}, "alt": {...}}
+    prediction_result: dict[str, Any]
+
+    # --- Output (prediction node → FastAPI) ---
+    response_text: str
+
+    # --- Observability (UI metadata) ---
+    llm_model: str | None
+    latency_ms: float | None
+    top_global_factors: dict[str, list[str]]
+
+    # --- Failure path ---
+    error: str
+
+
+def _merge_state(state: AgentState, **updates: Any) -> AgentState:
+    merged = dict(state)
+    merged.update(updates)
+    return cast(AgentState, merged)
+
+
+def initial_state_from_chat_request(request: ChatRequest) -> AgentState:
+    """Build the graph input state from an API ChatRequest."""
+    return AgentState(
+        user_message=request.message,
+        session_id=request.session_id,
+        user_id=request.user_id,
+    )
+
+
+def get_extraction(state: AgentState) -> LLMPredictionExtraction | None:
+    raw = state.get("extraction")
+    if raw is None:
+        return None
+    return LLMPredictionExtraction.model_validate(raw)
+
+
+def set_extraction(state: AgentState, extraction: LLMPredictionExtraction) -> AgentState:
+    return _merge_state(state, extraction=extraction.model_dump())
+
+
+def get_prediction_result(
+    state: AgentState,
+) -> PredictionResponse | dict[str, PredictionResponse] | None:
+    raw = state.get("prediction_result")
+    if raw is None:
+        return None
+    if "target" in raw:
+        return PredictionResponse.model_validate(raw)
+    return {key: PredictionResponse.model_validate(value) for key, value in raw.items()}
+
+
+def set_prediction_result(
+    state: AgentState,
+    result: PredictionResponse | dict[str, PredictionResponse],
+) -> AgentState:
+    if isinstance(result, dict):
+        payload = {key: value.model_dump() for key, value in result.items()}
+    else:
+        payload = result.model_dump()
+    return _merge_state(state, prediction_result=payload)
+
+
+def chat_response_from_state(state: AgentState) -> ChatResponse:
+    """Map terminal AgentState to the public ChatResponse DTO."""
+    session_id = state.get("session_id", "")
+    response_text = state.get("response_text", "")
+    error = state.get("error")
+    if error:
+        return ChatResponse(
+            text=response_text or error,
+            session_id=session_id,
+            metadata=_metadata_from_state(state),
+        )
+
+    prediction_result = get_prediction_result(state)
+    if prediction_result is None:
+        return ChatResponse(
+            text=response_text,
+            session_id=session_id,
+            metadata=_metadata_from_state(state),
+        )
+
+    return ChatResponse.from_prediction_results(
+        text=response_text,
+        session_id=session_id,
+        result=prediction_result,
+        llm_model=state.get("llm_model"),
+        latency_ms=state.get("latency_ms"),
+        top_global_factors=state.get("top_global_factors"),
+    )
+
+
+def _metadata_from_state(state: AgentState):
+    from schemas.chat import ChatAgentMetadata
+
+    return ChatAgentMetadata(
+        llm_model=state.get("llm_model"),
+        latency_ms=state.get("latency_ms"),
+    )

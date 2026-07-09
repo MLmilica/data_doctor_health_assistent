@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -74,7 +75,7 @@ def build_column_profile(series: pd.Series, name: str) -> ColumnProfile:
 def build_data_profile(loader: PatientDataLoader) -> DataProfile:
     dataframe = loader.get_dataframe()
     columns = [
-        build_column_profile(dataframe[column.name], column.name)
+        build_column_profile(cast(pd.Series, dataframe[column.name]), column.name)
         for column in COLUMN_DEFINITIONS
         if column.name in dataframe.columns
     ]
