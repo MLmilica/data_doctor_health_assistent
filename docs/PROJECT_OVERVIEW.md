@@ -9,17 +9,15 @@ It combines:
   - `COPD` severity class (A/B/C/D)
   - `ALT` lab value regression
 - **LLM-based extraction + synthesis** around deterministic ML results
-- **LangGraph-oriented agent architecture** (prediction slice implemented first)
-- **FastAPI + Streamlit UI** (prediction slice E2E)
+- **LangGraph multi-agent orchestration** (guardrails → orchestrator → specialist agents)
+- **FastAPI + Streamlit UI** (Chat via orchestrated graph; Form for direct ML)
 
-Current implemented core for the prediction slice:
+Current implemented core:
 
-- Feature mapping and normalization from natural language to model features
-- Two-step LLM flow:
-  - extraction (`user message -> structured prediction request`)
-  - synthesis (`prediction facts -> analyst-friendly explanation`)
+- **Orchestration:** guardrails, hybrid routing (rules + LLM), stub `data` / `rag` / `fallback` agents
+- **Prediction agent:** feature mapping, LLM extract → ML → LLM synthesis
 - Deterministic prediction response contract (LLM does not invent prediction values)
-- Minimal LangGraph flow: `START -> predict -> END`
+- LangGraph flow: `START -> orchestrator -> predict | data | rag | fallback -> END`
 
 ---
 
@@ -134,33 +132,39 @@ For runtime smoke testing, see **Runtime Smoke Tests** below.
 
 ## Runtime Smoke Tests
 
-Use these scripts to verify real LLM + ML behavior (not mocked unit tests).
+Use these scripts to verify real graph behavior (not mocked unit tests).
 
 | Script | What it exercises |
 |--------|-------------------|
-| `scripts/smoke_chat_graph.py` | Full path: `ChatRequest -> LangGraph -> prediction agent -> ML -> ChatResponse` |
-| `scripts/smoke_prediction_agent.py` | Prediction agent only (bypasses LangGraph wrapper) |
+| `scripts/smoke_chat_graph.py` | Full path: `ChatRequest -> LangGraph -> orchestrator -> specialist agent -> ChatResponse` |
+| `scripts/smoke_prediction_agent.py` | Prediction agent only (bypasses orchestrator and graph routing) |
 
-Both scripts print JSON with `request`, `response`, and `state_error`.
+`smoke_chat_graph.py` prints JSON with `request`, **`routing`**, `response`, and `state_error`.  
+A one-line routing summary is printed to **stderr** before the JSON.
 
 ### Prerequisites
 
 1. Dependencies installed (`uv sync`)
-2. `.env` configured with a valid provider API key
-3. ML artifacts available (if missing, run `uv run python -m ml.train`)
+2. For **prediction** routes: `.env` with a valid provider API key + ML artifacts (`uv run python -m ml.train`)
+3. For **data / rag / fallback** routes via smoke script: LLM key **not** required (rule-based orchestrator + stub agents)
+
+`POST /chat` via API still requires an LLM key for all routes until that check is relaxed.
 
 ### Shared output checks
 
 | Field | Pass condition |
 |-------|----------------|
 | `state_error` | `null` for successful runs |
+| `routing.routed_to` | `prediction`, `data`, `rag`, or `fallback` |
+| `routing.route_source` | `rules`, `llm`, or `guardrail` |
+| `routing.agent_steps` | e.g. `["orchestrator:data", "data"]` |
 | `response.session_id` | matches `--session-id` (or default `smoke-session`) |
 | `response.text` | readable answer text |
-| `response.prediction` | present for single-target prediction prompts |
+| `response.prediction` | present for single-target **prediction** prompts |
 | `response.predictions` | present for `both` prompts (`copd` + `alt`) |
 | `response.prediction.can_predict` | `true` when required features are available |
 | `response.prediction.defaults_used` | may be non-empty when optional fields are imputed |
-| `response.metadata.llm_model` | populated (routing + synthesis models) |
+| `response.metadata.llm_model` | populated for prediction routes |
 | `response.metadata.latency_ms` | positive number |
 
 ### Example prompts
@@ -173,10 +177,19 @@ Both scripts print JSON with `request`, `response`, and `state_error`.
 
 ### Test `smoke_chat_graph.py`
 
-Basic run:
+Basic run (prediction example — needs LLM + ML):
 
 ```bash
 uv run python scripts/smoke_chat_graph.py
+```
+
+Built-in examples by route (`--expect-route` asserts `routing.routed_to`):
+
+```bash
+uv run python scripts/smoke_chat_graph.py --example data --expect-route data
+uv run python scripts/smoke_chat_graph.py --example rag --expect-route rag
+uv run python scripts/smoke_chat_graph.py --example fallback --expect-route fallback
+uv run python scripts/smoke_chat_graph.py --example clarify --expect-route fallback
 ```
 
 Custom message:
@@ -191,22 +204,28 @@ Custom session id:
 uv run python scripts/smoke_chat_graph.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id demo-1
 ```
 
+Run `uv run python scripts/smoke_chat_graph.py --help` for all example prompts.
+
 Suggested manual cases:
 
 ```bash
-uv run python scripts/smoke_chat_graph.py --message "Predict ALT for a patient with BMI 30" --session-id t1
-uv run python scripts/smoke_chat_graph.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id t2
-uv run python scripts/smoke_chat_graph.py --message "I need both predictions for BMI 29, moderate exercise, middle income" --session-id t3
-uv run python scripts/smoke_chat_graph.py --message "Predict COPD" --session-id t4
-uv run python scripts/smoke_chat_graph.py --message "Show me a SQL query for readmissions by month" --session-id t5
+uv run python scripts/smoke_chat_graph.py --message "Predict ALT for a patient with BMI 30" --session-id t1 --expect-route prediction
+uv run python scripts/smoke_chat_graph.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id t2 --expect-route prediction
+uv run python scripts/smoke_chat_graph.py --message "I need both predictions for BMI 29, moderate exercise, middle income" --session-id t3 --expect-route prediction
+uv run python scripts/smoke_chat_graph.py --message "Predict COPD" --session-id t4 --expect-route prediction
+uv run python scripts/smoke_chat_graph.py --example data --session-id t5 --expect-route data
+uv run python scripts/smoke_chat_graph.py --example rag --session-id t6 --expect-route rag
+uv run python scripts/smoke_chat_graph.py --example fallback --session-id t7 --expect-route fallback
 ```
 
 Expected by case:
 
-- **t1/t2:** `state_error = null`, prediction present, `can_predict = true`
+- **t1/t2:** `state_error = null`, `routing.routed_to = prediction`, `can_predict = true`
 - **t3:** `response.predictions` contains both `copd` and `alt`
 - **t4:** clarification text or `can_predict = false` with `missing_required`
-- **t5:** `metadata.routed_to = data`, no ML prediction payload; data-agent stub response text
+- **t5:** `routing.routed_to = data`, no ML prediction payload; data-agent stub text
+- **t6:** `routing.routed_to = rag`, RAG stub text
+- **t7:** `routing.routed_to = fallback`, `routing.guardrail_blocked = true` on guardrail example
 
 ### Test `smoke_prediction_agent.py`
 
@@ -228,9 +247,9 @@ Custom session id:
 uv run python scripts/smoke_prediction_agent.py --message "Predict COPD for smoker with poor diet and low exercise" --session-id demo-1
 ```
 
-Use the same manual cases (`t1`–`t5`) as above; expected output shape is the same JSON contract.
+Use the prediction manual cases (`t1`–`t4`) above; expected output shape is the same JSON contract but **without** a top-level `routing` block and without orchestrator steps.
 
-Difference vs graph smoke test: this script calls `run_prediction_agent` directly, so it is useful when debugging agent logic without LangGraph wiring.
+Difference vs graph smoke test: this script calls `run_prediction_agent` directly, so it is useful when debugging prediction logic without LangGraph wiring.
 
 ### Common failure signals
 
@@ -434,6 +453,12 @@ Fastest way to verify routing logic:
 
 ```bash
 uv run pytest tests/test_agents/test_graph.py tests/test_agents/test_orchestrator.py tests/test_agents/test_guardrails.py -v
+```
+
+Or use the smoke script without an API key for stub routes:
+
+```bash
+uv run python scripts/smoke_chat_graph.py --example data --expect-route data
 ```
 
 These tests mock the prediction agent and exercise rule-based routing, guardrails, and graph wiring.

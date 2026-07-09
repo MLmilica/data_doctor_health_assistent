@@ -70,17 +70,71 @@ uv run pytest tests/test_data/
 uv run jupyter notebook notebooks/01_eda.ipynb
 ```
 
-### 4. API and UI (in progress)
-
-FastAPI and Streamlit are not implemented yet (Day 5). When ready:
+### 4. Train ML models (if needed)
 
 ```bash
-# API
-uv run uvicorn api.main:app --reload --app-dir src
+uv run python -m ml.train
+```
 
-# Streamlit UI
+### 5. API and Streamlit UI
+
+The **Chat** tab uses FastAPI + LangGraph orchestration. The **Form** tab calls ML directly (no LLM).
+
+**Terminal 1 — API:**
+
+```bash
+uv run uvicorn api.main:app --reload --app-dir src
+```
+
+- API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+
+**Terminal 2 — UI:**
+
+```bash
 uv run streamlit run ui/app.py
 ```
+
+- UI: `http://localhost:8501`
+
+**Graph flow:**
+
+```text
+START -> orchestrator -> predict | data | rag | fallback -> END
+```
+
+- `prediction` — COPD/ALT ML predictions (needs LLM + trained models)
+- `data` / `rag` — stubs for now (routing works; full agents coming in Phase 2)
+- `fallback` — guardrail blocks, unclear requests, low-confidence routing
+
+`POST /chat` currently requires an LLM API key in `.env` for all routes.
+
+### 6. Smoke tests (real LLM / graph)
+
+**Full graph** (orchestrator + specialist agents):
+
+```bash
+uv run python scripts/smoke_chat_graph.py
+uv run python scripts/smoke_chat_graph.py --example data --expect-route data
+uv run python scripts/smoke_chat_graph.py --example rag --expect-route rag
+uv run python scripts/smoke_chat_graph.py --example fallback --expect-route fallback
+```
+
+JSON output includes a top-level `routing` block (`routed_to`, `route_confidence`, `route_source`, `agent_steps`). A one-line routing summary is printed to stderr.
+
+**Prediction agent only** (bypasses orchestrator):
+
+```bash
+uv run python scripts/smoke_prediction_agent.py
+```
+
+**Orchestration unit tests** (no LLM):
+
+```bash
+uv run pytest tests/test_agents/test_graph.py tests/test_agents/test_orchestrator.py tests/test_agents/test_guardrails.py -v
+```
+
+See `docs/PROJECT_OVERVIEW.md` → **Testing Initial Orchestration** for curl/Swagger/UI examples.
 
 ## Configuration
 
