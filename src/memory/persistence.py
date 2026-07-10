@@ -95,6 +95,8 @@ def build_step_record(state: AgentState) -> StepRecord:
                     settings.memory_sql_sample_rows,
                 ),
             }
+        elif state.get("requires_clarification"):
+            status = "clarification"
     elif route == "rag":
         rag_result = get_rag_result(state)
         if rag_result is not None:

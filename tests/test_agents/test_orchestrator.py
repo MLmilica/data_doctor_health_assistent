@@ -51,6 +51,28 @@ def test_route_with_rules_ambiguous_returns_none() -> None:
     assert route_with_rules("hello there") is None
 
 
+def test_route_with_rules_rag_seasonal_allergy_symptoms() -> None:
+    decision = route_with_rules("What are the symptoms of seasonal allergies?")
+    assert decision is not None
+    assert decision.route == AgentRoute.RAG
+    assert decision.source == "rules"
+
+
+def test_route_with_rules_rag_summarize_diabetic_treatment_plan() -> None:
+    decision = route_with_rules("Summarize the treatment plan for diabetic patients over 60.")
+    assert decision is not None
+    assert decision.route == AgentRoute.RAG
+
+
+def test_route_with_rules_data_compare_lab_readmission() -> None:
+    decision = route_with_rules(
+        "Compare lab results across readmitted vs non-readmitted patients",
+    )
+    assert decision is not None
+    assert decision.route == AgentRoute.DATA
+    assert decision.source == "rules"
+
+
 @patch("agents.orchestrator.route_with_llm")
 def test_decide_route_uses_rules_before_llm(mock_llm) -> None:
     decision = decide_route("Predict COPD for smoker with poor diet", allow_llm=True)

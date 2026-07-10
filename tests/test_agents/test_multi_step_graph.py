@@ -59,6 +59,35 @@ def test_graph_multi_step_data_then_prediction(
     assert "synthesis" in (final_state.get("agent_steps") or [])
 
 
+@patch("agents.graph.run_rag_agent")
+@patch("agents.subagents.data_agent.extract_sql_with_llm")
+def test_graph_stops_multi_step_when_data_needs_clarification(
+    mock_extract_sql: Any,
+    mock_rag: Any,
+) -> None:
+    mock_extract_sql.return_value = LLMSQLExtraction(
+        sql="SELECT AVG(bmi) AS average_bmi FROM patients",
+        requires_clarification=True,
+        clarification_prompt="Which exercise grouping should I use in SQL?",
+    )
+
+    state = initial_state_from_chat_request(
+        ChatRequest(
+            message=(
+                "What is the average BMI in the dataset and what do documents "
+                "recommend for low-impact exercise?"
+            ),
+            session_id="clarify-1",
+        ),
+    )
+    final_state = build_graph().invoke(state)
+
+    mock_rag.assert_not_called()
+    assert final_state.get("requires_clarification") is True
+    assert "Which exercise grouping" in (final_state.get("response_text") or "")
+    assert "synthesis" not in (final_state.get("agent_steps") or [])
+
+
 @patch("agents.graph.run_prediction_agent")
 def test_graph_single_agent_finishes_without_synthesize(mock_predict: Any) -> None:
     mock_predict.return_value = {

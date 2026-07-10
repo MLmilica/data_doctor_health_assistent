@@ -19,13 +19,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You route analyst chat messages to the correct s
 Routes:
 - prediction: COPD/ALT ML predictions from patient attributes (BMI, diet, exercise, smoker, etc.)
 - data: SQL/analytics questions over the patient CSV dataset (counts, averages, trends, readmissions)
-- rag: search clinical documents, guidelines, policies, treatment plans; citation-style questions; what documents recommend or say
+- rag: search clinical documents, guidelines, policies, treatment plans; citation-style questions; what documents recommend or say; clinical knowledge questions answerable from indexed notes (symptoms, treatment summaries, condition info) — try RAG before fallback
 - fallback: greetings, chit-chat, unrelated topics, or requests that do not fit the above
 
 Rules:
 - Choose exactly one route.
-- Dataset analytics (counts, averages, groupings, distributions) -> data even if COPD/ALT column names appear.
+- Dataset analytics (counts, averages, groupings, distributions, comparing cohorts in the patient CSV) -> data even if COPD/ALT column names appear.
 - prediction is only for inferring a class/value for a specific patient scenario (usually with the word predict).
+- Questions about symptoms, treatment plans, summarizing clinical notes, or condition information -> rag (search documents first; say if not found).
 - Questions about what clinical documents, guidelines, policies, or treatment plans say/recommend -> rag (not fallback).
 - Use confidence >= 0.8 only when intent is clear.
 - Set requires_clarification=true when the message is ambiguous and cannot be executed safely.
@@ -83,6 +84,10 @@ _RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
         "summarize",
         "cite",
         "citation",
+        "symptoms",
+        "symptom",
+        "treatment for",
+        "treatment of",
     ),
 }
 
@@ -102,6 +107,8 @@ _ANALYTICS_SIGNALS: tuple[str, ...] = (
     "distribution",
     " per ",
     "breakdown",
+    "lab results",
+    "readmitted",
 )
 
 _PREDICTION_INTENT_SIGNALS: tuple[str, ...] = (
@@ -138,6 +145,24 @@ _DOCUMENT_SEARCH_SIGNALS: tuple[str, ...] = (
     "citation",
 )
 
+_CLINICAL_KNOWLEDGE_SIGNALS: tuple[str, ...] = (
+    "symptoms",
+    "symptom of",
+    "signs of",
+    "side effects",
+    "treatment for",
+    "treatment of",
+    "management of",
+    "tell me about",
+    "information about",
+    "what are the",
+    "what is the",
+    "diabetic",
+    "diabetes",
+    "allerg",
+    "seasonal",
+)
+
 
 def _keyword_score(message: str, keywords: tuple[str, ...]) -> int:
     lowered = message.lower()
@@ -157,6 +182,12 @@ def _analytics_signal_count(message: str) -> int:
 def _document_search_signal_count(message: str) -> int:
     lowered = message.lower()
     return sum(1 for signal in _DOCUMENT_SEARCH_SIGNALS if signal in lowered)
+
+
+def _clinical_knowledge_signal_count(message: str) -> int:
+    """Signals for factual clinical questions that RAG should try from indexed documents."""
+    lowered = message.lower()
+    return sum(1 for signal in _CLINICAL_KNOWLEDGE_SIGNALS if signal in lowered)
 
 
 def _looks_like_prediction_follow_up(message: str) -> bool:
@@ -206,6 +237,24 @@ def route_with_rules(
             reasoning=(
                 f"Detected {document_hits} clinical document search signal(s) "
                 "without dataset analytics or prediction intent."
+            ),
+            source="rules",
+        )
+
+    clinical_hits = _clinical_knowledge_signal_count(message)
+    if (
+        clinical_hits > 0
+        and not _explicit_prediction_intent(message)
+        and analytics_hits == 0
+        and document_hits == 0
+    ):
+        confidence = min(0.88, 0.62 + clinical_hits * 0.08)
+        return RoutingDecision(
+            route=AgentRoute.RAG,
+            confidence=confidence,
+            reasoning=(
+                f"Detected {clinical_hits} clinical knowledge signal(s); "
+                "search indexed documents before fallback."
             ),
             source="rules",
         )

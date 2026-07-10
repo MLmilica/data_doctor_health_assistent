@@ -5,6 +5,7 @@ from __future__ import annotations
 from agents.multi_step import (
     completed_specialist_agents,
     detect_required_agents,
+    is_multi_part_request,
     plan_next_step,
 )
 from agents.state import AgentState
@@ -73,3 +74,33 @@ def test_completed_specialist_agents_falls_back_to_agent_steps() -> None:
     state = AgentState(agent_steps=["orchestrator:prediction", "prediction"])
     completed = completed_specialist_agents(state)
     assert completed == {AgentRoute.PREDICTION}
+
+
+def test_is_multi_part_request_detects_data_and_rag() -> None:
+    message = (
+        "What is the average BMI in the dataset and what do documents "
+        "recommend for low-impact exercise?"
+    )
+    assert is_multi_part_request(message) is True
+    assert is_multi_part_request("How many smokers?") is False
+
+
+def test_plan_next_step_finishes_when_agent_needs_clarification() -> None:
+    state = AgentState(
+        user_message=(
+            "What is the average BMI in the dataset and what do documents "
+            "recommend for low-impact exercise?"
+        ),
+        requires_clarification=True,
+        clarification_prompt="Which grouping should I use?",
+        step_records=[
+            {
+                "agent": "data",
+                "status": "clarification",
+                "artifact": {},
+                "assistant_summary": "Which grouping should I use?",
+            }
+        ],
+    )
+    plan = plan_next_step(state, allow_llm=False)
+    assert plan.action == OrchestratorAction.FINISH

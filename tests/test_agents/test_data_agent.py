@@ -79,6 +79,29 @@ def test_run_data_agent_clarification(mock_extract: Any) -> None:
 
     assert "data_result" not in result_state
     assert result_state.get("response_text") == "Which grouping should I use?"
+    assert result_state.get("requires_clarification") is True
+
+
+@patch("agents.subagents.data_agent.synthesize_data_response_text")
+@patch("agents.subagents.data_agent.extract_sql_with_llm")
+def test_run_data_agent_passes_combo_context_for_multi_part_question(
+    mock_extract: Any,
+    mock_synthesize: Any,
+) -> None:
+    mock_extract.return_value = LLMSQLExtraction(
+        sql="SELECT AVG(bmi) AS average_bmi FROM patients",
+        explanation="Average BMI in dataset.",
+    )
+    mock_synthesize.return_value = "Average BMI is about 27."
+
+    message = (
+        "What is the average BMI in the dataset and what do documents "
+        "recommend for low-impact exercise?"
+    )
+    state = initial_state_from_chat_request(ChatRequest(message=message, session_id="combo-1"))
+    run_data_agent(state)
+
+    assert mock_extract.call_args.kwargs.get("combo_context") is True
 
 
 def test_format_data_response_includes_sql_and_rows() -> None:

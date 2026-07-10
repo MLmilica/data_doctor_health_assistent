@@ -6,6 +6,7 @@ from typing import Any
 
 from agents.orchestrator import (
     _analytics_signal_count,
+    _clinical_knowledge_signal_count,
     _document_search_signal_count,
     _explicit_prediction_intent,
     _looks_like_prediction_follow_up,
@@ -62,7 +63,7 @@ def detect_required_agents(message: str) -> set[AgentRoute]:
         required.add(AgentRoute.PREDICTION)
     elif "bmi" in lowered and ("predict" in lowered or "alt" in lowered or "copd" in lowered):
         required.add(AgentRoute.PREDICTION)
-    if _document_search_signal_count(message) > 0:
+    if _document_search_signal_count(message) > 0 or _clinical_knowledge_signal_count(message) > 0:
         required.add(AgentRoute.RAG)
 
     return required
@@ -75,11 +76,27 @@ def _next_agent_in_priority(remaining: set[AgentRoute]) -> AgentRoute:
     return next(iter(remaining))
 
 
+def is_multi_part_request(message: str) -> bool:
+    """True when the message needs more than one specialist agent."""
+    return len(detect_required_agents(message)) > 1
+
+
+def agent_requested_clarification(state: AgentState) -> bool:
+    """True when a specialist agent paused the run for a user follow-up."""
+    return bool(state.get("requires_clarification"))
+
+
 def plan_next_step(state: AgentState, *, allow_llm: bool = True) -> LLMMultiStepPlan:
     """Decide whether to route, synthesize, or finish in the orchestrator loop."""
     message = state.get("user_message", "")
     completed = completed_specialist_agents(state)
     specialist_count = len(completed)
+
+    if agent_requested_clarification(state):
+        return LLMMultiStepPlan(
+            action=OrchestratorAction.FINISH,
+            reasoning="Specialist agent requires user clarification before continuing.",
+        )
 
     if specialist_count >= settings.orchestrator_max_agent_steps:
         if specialist_count >= 2:

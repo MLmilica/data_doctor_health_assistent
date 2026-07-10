@@ -15,6 +15,7 @@ from agents.subagents.prediction_agent import (
     routing_llm,
     synthesis_llm,
 )
+from agents.multi_step import is_multi_part_request
 from agents.tools.sql_layer import SqlValidationError, get_sql_layer
 from config import settings
 from memory.persistence import append_run_step_record
@@ -31,9 +32,18 @@ Rules:
 - Use only columns from the provided schema.
 - Prefer clear aliases for aggregates (e.g. patient_count, average_bmi).
 - Do not use DDL/DML, file readers, or multiple statements.
-- If the question is ambiguous, set requires_clarification=true and ask a focused follow-up.
+- If the question is ambiguous about the **dataset metric or grouping**, set requires_clarification=true.
+- Never set requires_clarification because the message also asks about documents, predictions, or guidelines.
 - The dataset has no admission dates — do not invent month/time columns. For readmission analytics, use the `readmitted` flag.
-- For combo questions (e.g. compare average BMI with a prediction), write SQL only for the analytics part.
+- For combo questions (e.g. average BMI plus document search), write SQL only for the analytics part and ignore the rest.
+"""
+
+COMBO_SQL_EXTRA_PROMPT = """This is a multi-part question (dataset + prediction and/or documents).
+
+Your job is ONLY the dataset/SQL portion:
+- Write SQL for clear analytics requests (average BMI, counts, group by, etc.) even if the message also asks about documents or predictions.
+- Do NOT set requires_clarification because of document or prediction content — other agents handle those parts.
+- If average BMI or a similar aggregate is requested, produce the SQL now.
 """
 
 DATA_SYNTHESIS_SYSTEM_PROMPT = """You answer clinical analytics questions for an analyst audience.
@@ -59,6 +69,7 @@ def extract_sql_with_llm(
     *,
     schema_prompt: str,
     correction_hint: str | None = None,
+    combo_context: bool = False,
 ) -> LLMSQLExtraction:
     """LLM: natural language → SQL extraction schema."""
     configure_llm_environment()
@@ -67,6 +78,8 @@ def extract_sql_with_llm(
         f"Schema:\n{schema_prompt}\n\n"
         f"User question:\n{user_message}"
     )
+    if combo_context:
+        prompt += f"\n\n{COMBO_SQL_EXTRA_PROMPT}"
     if correction_hint:
         prompt += (
             "\n\nYour previous SQL was rejected or failed. "
@@ -151,12 +164,14 @@ def run_data_agent(state: AgentState) -> AgentState:
         layer = get_sql_layer()
         schema_prompt = layer.schema_prompt()
         correction_hint: str | None = None
+        combo_context = is_multi_part_request(user_message)
 
         for attempt in range(2):
             extraction = extract_sql_with_llm(
                 user_message,
                 schema_prompt=schema_prompt,
                 correction_hint=correction_hint,
+                combo_context=combo_context,
             )
 
             if extraction.requires_clarification:
@@ -167,6 +182,8 @@ def run_data_agent(state: AgentState) -> AgentState:
                 updated = _merge_state(
                     state,
                     response_text=response_text,
+                    requires_clarification=True,
+                    clarification_prompt=response_text,
                     llm_model=llm_model,
                     latency_ms=round((time.perf_counter() - started) * 1000, 2),
                 )
@@ -192,6 +209,8 @@ def run_data_agent(state: AgentState) -> AgentState:
         updated = _merge_state(
             state,
             response_text=response_text,
+            requires_clarification=False,
+            clarification_prompt=None,
             llm_model=llm_model,
             latency_ms=round(prior_latency + (time.perf_counter() - started) * 1000, 2),
         )
