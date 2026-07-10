@@ -1038,3 +1038,70 @@ Use **New session** in Streamlit to verify isolation between sessions.
 | 9 | Something interesting | `fallback` | No |
 | 10 | Compare readmissions by month | `data` | No |
 
+---
+
+## End-to-end system test prompts (assignment checklist)
+
+Use these prompts to validate the full Data Doctor stack: ML models, dataset SQL, RAG over indexed documents, orchestration, and the Streamlit/API chat interface.
+
+### Your system should:
+
+- Understand the dataset and surface insights about patient risk factors, potential interventions, and feature patterns.
+- Build models to predict patients’ `chronic_obstructive_pulmonary_disease` and `alanine_aminotransferases`.
+- Enable a conversational interface that can answer both data-specific and document-based queries like:
+
+**Prerequisites:** API + UI running, `.env` with LLM key, `uv run python -m ml.train`, `data/raw/patient_data.csv`, and `uv run python scripts/index_documents.py` for RAG prompts.
+
+| # | Prompt | Expected `routed_to` | What to verify |
+|---|--------|----------------------|----------------|
+| 1 | What is the predicted value for chronic_obstructive_pulmonary_disease for 55 year old male with bmi of 27.5, which takes 3 medications, doesn’t exercise, and have poor diet quality? | `prediction` | `response.prediction` with COPD class; features extracted (BMI, diet, exercise, sex, medication_count); disclaimer present |
+| 2 | What is the predicted value for alanine_aminotransferases for woman at 44 years, that has been in a hospital for 5 days, readmitted, athlete that lives in the center of the city? | `prediction` | ALT numeric prediction; `used_features` / `defaults_used` in metadata; may impute fields not in the message |
+| 3 | How many smokers are in the dataset? | `data` | SQL over `patients`; **Data query details** expander with `smoker` aggregation |
+| 4 | How many males older then 40 are readmitted? | `data` | SQL with `sex`, `age`, `readmitted` filters; row count in `data_query` |
+| 5 | What medications was the heart attack patient taking? | `rag` | Document search + citations; honest “not in documents” if corpus has no heart-attack medication list |
+| 6 | How many patients were taking more than 5 medications? | `data` | SQL on `medication_count > 5`; numeric count in response |
+| 7 | What are the symptoms of seasonal allergies? | `rag` | Routes to RAG (not fallback); citations or explicit not-found if corpus lacks symptom text |
+| 8 | Summarize the treatment plan for diabetic patients over 60. | `rag` | Treatment-plan chunks + summary; **Document sources** expander |
+| 9 | Compare lab results across readmitted vs non-readmitted patients | `data` | SQL comparing cohorts (e.g. `readmitted` groups + lab columns); not RAG — this is CSV analytics |
+
+### Full prompt text (copy-paste)
+
+1. `What is the predicted value for chronic_obstructive_pulmonary_disease for 55 year old male with bmi of 27.5, which takes 3 medications, doesn’t exercise, and have poor diet quality?`
+
+2. `What is the predicted value for alanine_aminotransferases for woman at 44 years, that has been in a hospital for 5 days, readmitted, athlete that lives in the center of the city?`
+
+3. `How many smokers are in the dataset?`
+
+4. `How many males older then 40 are readmitted?`
+
+5. `What medications was the heart attack patient taking?`
+
+6. `How many patients were taking more than 5 medications?`
+
+7. `What are the symptoms of seasonal allergies?`
+
+8. `Summarize the treatment plan for diabetic patients over 60.`
+
+9. `Compare lab results across readmitted vs non-readmitted patients`
+
+### Smoke script (optional)
+
+```bash
+uv run python scripts/smoke_chat_graph.py \
+  --message "How many smokers are in the dataset?" \
+  --expect-route data \
+  --session-id e2e-smokers
+
+uv run python scripts/smoke_chat_graph.py \
+  --message "What are the symptoms of seasonal allergies?" \
+  --expect-route rag \
+  --session-id e2e-allergies
+```
+
+### Notes
+
+- **Prediction** prompts need trained COPD/ALT artifacts and an LLM for feature extraction.
+- **Data** prompts need `patient_data.csv`; some assignment wording (e.g. “hospital for 5 days”) may map to defaults or nearest schema columns (`days_in_hospital`, `urban`, etc.).
+- **RAG** prompts need indexed `data/documents/`; answers are limited to indexed content — general medical facts not in the corpus should return grounded “not found” style responses, not fallback help text.
+- **Insights / risk factors** (first bullet in “Your system should”) are partially covered by SHAP artifacts and future insight tooling; chat today routes through prediction, data, or rag as above.
+
