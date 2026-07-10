@@ -80,8 +80,11 @@ def require_llm_api_key() -> None:
 
 
 def configure_llm_environment() -> None:
-    """Sync configured provider key into expected env var for LangChain integrations."""
+    """Sync configured provider and LangSmith keys into expected env vars."""
+    from observability.langsmith import configure_langsmith
+
     require_llm_api_key()
+    configure_langsmith()
     if settings.llm_provider == "anthropic":
         if settings.anthropic_api_key:
             os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key

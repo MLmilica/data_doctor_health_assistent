@@ -264,4 +264,8 @@ class HealthResponse(BaseModel):
         default=0,
         description="Number of indexed document sections in Chroma.",
     )
+    langsmith_tracing: bool = Field(
+        default=False,
+        description="True when LANGCHAIN_TRACING_V2 is enabled and API key is set.",
+    )
     detail: str | None = None

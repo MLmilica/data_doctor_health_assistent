@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     langchain_tracing_v2: bool = Field(default=False, validation_alias="LANGCHAIN_TRACING_V2")
     langchain_api_key: str = Field(default="", validation_alias="LANGCHAIN_API_KEY")
     langchain_project: str = Field(default="data-doctor", validation_alias="LANGCHAIN_PROJECT")
+    langchain_endpoint: str = Field(default="", validation_alias="LANGCHAIN_ENDPOINT")
 
     # Orchestrator / guardrails
     chat_max_message_chars: int = 4000

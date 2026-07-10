@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from api.dependencies import are_ml_models_loaded, get_document_index_status, is_llm_configured
+from observability.langsmith import is_langsmith_enabled
 from schemas.chat import HealthResponse
 
 router = APIRouter(tags=["health"])
@@ -39,5 +40,6 @@ def health_check() -> HealthResponse:
         ml_models_loaded=ml_models_loaded,
         documents_indexed=documents_indexed,
         document_chunk_count=document_chunk_count,
+        langsmith_tracing=is_langsmith_enabled(),
         detail=detail,
     )

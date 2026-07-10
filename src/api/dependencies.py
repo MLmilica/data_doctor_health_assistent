@@ -47,6 +47,10 @@ def invoke_chat(request: ChatRequest) -> ChatResponse:
 def startup() -> None:
     global _graph, _ml_models_loaded
 
+    from observability.langsmith import configure_langsmith
+
+    configure_langsmith()
+
     _ml_models_loaded = False
     try:
         ModelRegistry.load()

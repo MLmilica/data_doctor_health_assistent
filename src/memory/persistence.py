@@ -16,6 +16,7 @@ from agents.state import (
 from config import settings
 from memory.context import steps_to_dicts, turns_to_dicts, window_steps, window_turns
 from memory.session_store import InMemorySessionStore, get_session_store
+from observability.langsmith import build_graph_run_config
 from schemas.chat import ChatRequest, ChatResponse
 from schemas.memory import ChatSession, ChatTurn, SessionFacts, StepRecord, utc_now
 from schemas.prediction import PredictionResponse
@@ -233,7 +234,10 @@ def run_chat_with_memory(
     initial_state = initial_state_from_chat_request(request)
     initial_state = enrich_state_from_session(initial_state, session)
 
-    final_state = graph.invoke(initial_state)
+    final_state = graph.invoke(
+        initial_state,
+        config=build_graph_run_config(request),
+    )
     response = chat_response_from_state(final_state)
 
     session = persist_chat_turn(

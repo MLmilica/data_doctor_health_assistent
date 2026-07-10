@@ -447,6 +447,7 @@ def _render_sidebar() -> None:
                 "ml_models_loaded": health.ml_models_loaded,
                 "documents_indexed": health.documents_indexed,
                 "document_chunk_count": health.document_chunk_count,
+                "langsmith_tracing": health.langsmith_tracing,
                 "detail": health.detail,
             }
         )
