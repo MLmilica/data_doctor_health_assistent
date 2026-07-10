@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, cast
 
-from schemas.chat import ChatRequest, ChatResponse, ChatDataQueryDetails, ChatRAGDetails
+from schemas.chart import ChartResult
+from schemas.chat import (
+    ChatChartDetails,
+    ChatDataQueryDetails,
+    ChatInsightDetails,
+    ChatRAGDetails,
+    ChatRequest,
+    ChatResponse,
+)
+from schemas.insight import InsightResult
 from schemas.memory import SessionFacts, StepRecord
 from schemas.prediction import LLMPredictionExtraction, PredictionResponse
 from schemas.rag import RAGQueryResult
@@ -52,6 +61,8 @@ class AgentState(TypedDict, total=False):
 
     # --- Data agent (SQL node) ---
     data_result: dict[str, Any]
+    chart_result: dict[str, Any]
+    insight_result: dict[str, Any]
 
     # --- RAG agent ---
     rag_result: dict[str, Any]
@@ -155,6 +166,28 @@ def get_data_result(state: AgentState) -> DataQueryResult | None:
     return DataQueryResult.model_validate(raw)
 
 
+def set_chart_result(state: AgentState, result: ChartResult) -> AgentState:
+    return _merge_state(state, chart_result=result.model_dump())
+
+
+def get_chart_result(state: AgentState) -> ChartResult | None:
+    raw = state.get("chart_result")
+    if raw is None:
+        return None
+    return ChartResult.model_validate(raw)
+
+
+def set_insight_result(state: AgentState, result: InsightResult) -> AgentState:
+    return _merge_state(state, insight_result=result.model_dump())
+
+
+def get_insight_result(state: AgentState) -> InsightResult | None:
+    raw = state.get("insight_result")
+    if raw is None:
+        return None
+    return InsightResult.model_validate(raw)
+
+
 def set_rag_result(state: AgentState, result: RAGQueryResult) -> AgentState:
     return _merge_state(state, rag_result=result.model_dump())
 
@@ -180,10 +213,14 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
 
     prediction_result = get_prediction_result(state)
     data_result = get_data_result(state)
+    chart_result = get_chart_result(state)
+    insight_result = get_insight_result(state)
     rag_result = get_rag_result(state)
     data_query = (
         ChatDataQueryDetails.from_data_query_result(data_result) if data_result else None
     )
+    chart = ChatChartDetails.from_chart_result(chart_result) if chart_result else None
+    insight = ChatInsightDetails.from_insight_result(insight_result) if insight_result else None
     rag = ChatRAGDetails.from_rag_query_result(rag_result) if rag_result else None
 
     if prediction_result is None:
@@ -191,6 +228,8 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
             text=response_text,
             session_id=session_id,
             data_query=data_query,
+            chart=chart,
+            insight=insight,
             rag=rag,
             metadata=_metadata_from_state(state),
         )
@@ -207,6 +246,8 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
         update={
             "metadata": _metadata_from_state(state),
             "data_query": data_query,
+            "chart": chart,
+            "insight": insight,
             "rag": rag,
         }
     )

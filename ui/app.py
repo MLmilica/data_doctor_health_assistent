@@ -26,7 +26,7 @@ from ml.features import (  # noqa: E402
     COPD_REQUIRED_COLS,
     _default_for_column,
 )
-from schemas.chat import ChatDataQueryDetails, ChatPredictionDetails, ChatRAGDetails, ChatResponse, HealthResponse  # noqa: E402
+from schemas.chat import ChatDataQueryDetails, ChatChartDetails, ChatInsightDetails, ChatPredictionDetails, ChatRAGDetails, ChatResponse, HealthResponse  # noqa: E402
 from schemas.data import DataProfile  # noqa: E402
 from schemas.prediction import PatientFeatures, PredictionRequest, PredictionTarget  # noqa: E402
 
@@ -130,6 +130,32 @@ def _render_data_query_details(details: ChatDataQueryDetails) -> None:
     st.caption(details.disclaimer)
 
 
+def _render_chart_details(details: ChatChartDetails) -> None:
+    if details.explanation:
+        st.markdown(f"**Chart:** {details.explanation}")
+    st.caption(
+        f"Type: {details.chart_type} | Rows: {details.row_count} | "
+        f"x={details.x_column}"
+        + (f" | y={details.y_column}" if details.y_column else "")
+    )
+
+    with st.expander("SQL", expanded=False):
+        st.code(details.sql, language="sql")
+
+    if details.plotly_json:
+        st.plotly_chart(details.plotly_json, use_container_width=True)
+
+    st.caption(details.disclaimer)
+
+
+def _render_insight_details(details: ChatInsightDetails) -> None:
+    st.caption(f"Target: {details.target.upper()} | Source: {details.source}")
+    if details.top_features:
+        with st.expander("Top features", expanded=True):
+            st.dataframe(details.top_features, use_container_width=True)
+    st.caption(details.disclaimer)
+
+
 def _render_rag_details(details: ChatRAGDetails) -> None:
     st.caption(
         f"Retrieved: {details.retrieved_count} | Relevant: {details.relevant_count} | "
@@ -164,6 +190,14 @@ def _render_chat_response(response: ChatResponse) -> None:
     if response.data_query is not None:
         with st.expander("Data query details", expanded=True):
             _render_data_query_details(response.data_query)
+
+    if response.chart is not None:
+        with st.expander("Chart", expanded=True):
+            _render_chart_details(response.chart)
+
+    if response.insight is not None:
+        with st.expander("Model insights", expanded=True):
+            _render_insight_details(response.insight)
 
     if response.rag is not None:
         with st.expander("Document sources", expanded=True):

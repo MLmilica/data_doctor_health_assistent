@@ -10,6 +10,7 @@ from agents.orchestrator import (
     _document_search_signal_count,
     _explicit_prediction_intent,
     _looks_like_prediction_follow_up,
+    _model_insight_signal_count,
     decide_route,
 )
 from agents.state import AgentState, get_conversation_history, get_prior_steps, get_session_facts
@@ -59,11 +60,16 @@ def detect_required_agents(message: str) -> set[AgentRoute]:
 
     if _analytics_signal_count(message) > 0:
         required.add(AgentRoute.DATA)
+    insight_hits = _model_insight_signal_count(message)
+    if insight_hits > 0:
+        required.add(AgentRoute.DATA)
     if _explicit_prediction_intent(message) or _looks_like_prediction_follow_up(message):
         required.add(AgentRoute.PREDICTION)
     elif "bmi" in lowered and ("predict" in lowered or "alt" in lowered or "copd" in lowered):
         required.add(AgentRoute.PREDICTION)
-    if _document_search_signal_count(message) > 0 or _clinical_knowledge_signal_count(message) > 0:
+    if _document_search_signal_count(message) > 0:
+        required.add(AgentRoute.RAG)
+    elif _clinical_knowledge_signal_count(message) > 0 and insight_hits == 0:
         required.add(AgentRoute.RAG)
 
     return required

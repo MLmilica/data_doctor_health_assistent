@@ -73,6 +73,19 @@ def test_route_with_rules_data_compare_lab_readmission() -> None:
     assert decision.source == "rules"
 
 
+def test_route_with_rules_data_copd_risk_factors() -> None:
+    decision = route_with_rules("What are the main risk factors for COPD?")
+    assert decision is not None
+    assert decision.route == AgentRoute.DATA
+    assert decision.source == "rules"
+
+
+def test_route_with_rules_rag_symptoms_still_rag_not_insight() -> None:
+    decision = route_with_rules("What are the symptoms of seasonal allergies?")
+    assert decision is not None
+    assert decision.route == AgentRoute.RAG
+
+
 @patch("agents.orchestrator.route_with_llm")
 def test_decide_route_uses_rules_before_llm(mock_llm) -> None:
     decision = decide_route("Predict COPD for smoker with poor diet", allow_llm=True)

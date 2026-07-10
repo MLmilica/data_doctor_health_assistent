@@ -18,13 +18,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You route analyst chat messages to the correct s
 
 Routes:
 - prediction: COPD/ALT ML predictions from patient attributes (BMI, diet, exercise, smoker, etc.)
-- data: SQL/analytics questions over the patient CSV dataset (counts, averages, trends, readmissions)
+- data: SQL/analytics questions over the patient CSV dataset (counts, averages, trends, readmissions); model insights and risk factors from offline ML artifacts (SHAP, feature importance for COPD/ALT)
 - rag: search clinical documents, guidelines, policies, treatment plans; citation-style questions; what documents recommend or say; clinical knowledge questions answerable from indexed notes (symptoms, treatment summaries, condition info) — try RAG before fallback
 - fallback: greetings, chit-chat, unrelated topics, or requests that do not fit the above
 
 Rules:
 - Choose exactly one route.
 - Dataset analytics (counts, averages, groupings, distributions, comparing cohorts in the patient CSV) -> data even if COPD/ALT column names appear.
+- Questions about main risk factors, feature importance, or what drives COPD/ALT predictions -> data (insight tool over offline model artifacts), not rag.
 - prediction is only for inferring a class/value for a specific patient scenario (usually with the word predict).
 - Questions about symptoms, treatment plans, summarizing clinical notes, or condition information -> rag (search documents first; say if not found).
 - Questions about what clinical documents, guidelines, policies, or treatment plans say/recommend -> rag (not fallback).
@@ -66,6 +67,12 @@ _RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
         "duckdb",
         "by month",
         "by diet",
+        "risk factor",
+        "risk factors",
+        "feature importance",
+        "main driver",
+        "what drives",
+        "what affects",
     ),
     AgentRoute.RAG: (
         "document",
@@ -163,6 +170,22 @@ _CLINICAL_KNOWLEDGE_SIGNALS: tuple[str, ...] = (
     "seasonal",
 )
 
+_MODEL_INSIGHT_SIGNALS: tuple[str, ...] = (
+    "risk factor",
+    "risk factors",
+    "main driver",
+    "main drivers",
+    "feature importance",
+    "what affects",
+    "what drives",
+    "what influences",
+    "shap",
+    "strongest predictor",
+    "key predictor",
+    "important feature",
+    "important features",
+)
+
 
 def _keyword_score(message: str, keywords: tuple[str, ...]) -> int:
     lowered = message.lower()
@@ -188,6 +211,12 @@ def _clinical_knowledge_signal_count(message: str) -> int:
     """Signals for factual clinical questions that RAG should try from indexed documents."""
     lowered = message.lower()
     return sum(1 for signal in _CLINICAL_KNOWLEDGE_SIGNALS if signal in lowered)
+
+
+def _model_insight_signal_count(message: str) -> int:
+    """Signals for offline ML insight questions (SHAP / feature importance)."""
+    lowered = message.lower()
+    return sum(1 for signal in _MODEL_INSIGHT_SIGNALS if signal in lowered)
 
 
 def _looks_like_prediction_follow_up(message: str) -> bool:
@@ -237,6 +266,19 @@ def route_with_rules(
             reasoning=(
                 f"Detected {document_hits} clinical document search signal(s) "
                 "without dataset analytics or prediction intent."
+            ),
+            source="rules",
+        )
+
+    insight_hits = _model_insight_signal_count(message)
+    if insight_hits > 0 and not _explicit_prediction_intent(message):
+        confidence = min(0.92, 0.68 + insight_hits * 0.08)
+        return RoutingDecision(
+            route=AgentRoute.DATA,
+            confidence=confidence,
+            reasoning=(
+                f"Detected {insight_hits} model insight signal(s); "
+                "use offline SHAP/feature-importance artifacts."
             ),
             source="rules",
         )

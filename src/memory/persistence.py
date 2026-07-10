@@ -7,7 +7,9 @@ from typing import Any
 from agents.state import (
     AgentState,
     append_step_record,
+    get_chart_result,
     get_data_result,
+    get_insight_result,
     get_prediction_result,
     get_rag_result,
 )
@@ -82,21 +84,41 @@ def build_step_record(state: AgentState) -> StepRecord:
         elif state.get("requires_clarification"):
             status = "clarification"
     elif route == "data":
-        tool = "sql"
-        data_result = get_data_result(state)
-        if data_result is not None:
+        chart_result = get_chart_result(state)
+        insight_result = get_insight_result(state)
+        if chart_result is not None:
+            tool = "chart"
             artifact = {
-                "sql": data_result.sql,
-                "columns": data_result.columns,
-                "row_count": data_result.row_count,
-                "truncated": data_result.truncated,
-                "sample_rows": _sample_rows(
-                    data_result.rows,
-                    settings.memory_sql_sample_rows,
-                ),
+                "chart_type": chart_result.spec.chart_type,
+                "title": chart_result.spec.title,
+                "x_column": chart_result.spec.x_column,
+                "y_column": chart_result.spec.y_column,
+                "sql": chart_result.spec.sql,
+                "row_count": chart_result.row_count,
             }
-        elif state.get("requires_clarification"):
-            status = "clarification"
+        elif insight_result is not None:
+            tool = "insight"
+            artifact = {
+                "target": insight_result.target,
+                "source": insight_result.source,
+                "top_features": insight_result.top_features[:5],
+            }
+        else:
+            tool = "sql"
+            data_result = get_data_result(state)
+            if data_result is not None:
+                artifact = {
+                    "sql": data_result.sql,
+                    "columns": data_result.columns,
+                    "row_count": data_result.row_count,
+                    "truncated": data_result.truncated,
+                    "sample_rows": _sample_rows(
+                        data_result.rows,
+                        settings.memory_sql_sample_rows,
+                    ),
+                }
+            elif state.get("requires_clarification"):
+                status = "clarification"
     elif route == "rag":
         rag_result = get_rag_result(state)
         if rag_result is not None:

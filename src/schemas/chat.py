@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from schemas.chart import CHART_DISCLAIMER, ChartResult
 from schemas.citation import Citation
+from schemas.insight import INSIGHT_DISCLAIMER, InsightResult
 from schemas.prediction import FeatureMappingNote, PredictionResponse, PREDICTION_DISCLAIMER
 from schemas.rag import RAG_DISCLAIMER, RAGQueryResult
 from schemas.sql import DATA_QUERY_DISCLAIMER, DataQueryResult
@@ -90,6 +92,53 @@ class ChatDataQueryDetails(BaseModel):
         )
 
 
+class ChatChartDetails(BaseModel):
+    """Structured chart output exposed to the UI."""
+
+    chart_type: str
+    title: str
+    x_column: str
+    y_column: str | None = None
+    group_by: str | None = None
+    sql: str
+    row_count: int = 0
+    plotly_json: dict[str, Any] = Field(default_factory=dict)
+    explanation: str | None = None
+    disclaimer: str = CHART_DISCLAIMER
+
+    @classmethod
+    def from_chart_result(cls, result: ChartResult) -> ChatChartDetails:
+        spec = result.spec
+        return cls(
+            chart_type=spec.chart_type,
+            title=spec.title,
+            x_column=spec.x_column,
+            y_column=spec.y_column,
+            group_by=spec.group_by,
+            sql=spec.sql,
+            row_count=result.row_count,
+            plotly_json=result.plotly_json,
+            explanation=spec.explanation,
+        )
+
+
+class ChatInsightDetails(BaseModel):
+    """Structured insight output exposed to the UI."""
+
+    target: str
+    source: str = "precomputed"
+    top_features: list[dict[str, Any]] = Field(default_factory=list)
+    disclaimer: str = INSIGHT_DISCLAIMER
+
+    @classmethod
+    def from_insight_result(cls, result: InsightResult) -> ChatInsightDetails:
+        return cls(
+            target=result.target,
+            source=result.source,
+            top_features=result.top_features[:10],
+        )
+
+
 class ChatRAGDetails(BaseModel):
     """Structured RAG output exposed to the UI."""
 
@@ -140,6 +189,14 @@ class ChatResponse(BaseModel):
     data_query: ChatDataQueryDetails | None = Field(
         default=None,
         description="Present when the data agent executed a SQL query.",
+    )
+    chart: ChatChartDetails | None = Field(
+        default=None,
+        description="Present when the data agent rendered a chart.",
+    )
+    insight: ChatInsightDetails | None = Field(
+        default=None,
+        description="Present when the data agent returned offline model insights.",
     )
     rag: ChatRAGDetails | None = Field(
         default=None,

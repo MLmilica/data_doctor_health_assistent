@@ -12,6 +12,18 @@ from agents.state import AgentState
 from schemas.routing import AgentRoute, OrchestratorAction
 
 
+def test_detect_required_agents_copd_risk_factors_data_only() -> None:
+    required = detect_required_agents("What are the main risk factors for COPD?")
+    assert required == {AgentRoute.DATA}
+
+
+def test_plan_next_step_routes_copd_risk_factors_to_data() -> None:
+    state = AgentState(user_message="What are the main risk factors for COPD?")
+    plan = plan_next_step(state, allow_llm=False)
+    assert plan.action == OrchestratorAction.ROUTE
+    assert plan.route == AgentRoute.DATA
+
+
 def test_detect_required_agents_combo_message() -> None:
     message = (
         "Compare average BMI in the dataset with ALT prediction for BMI 30 "
