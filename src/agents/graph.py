@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from langgraph.graph import END, START, StateGraph
 
 from agents.orchestrator import run_orchestrator
-from agents.state import (
-    AgentState,
-    chat_response_from_state,
-    initial_state_from_chat_request,
-)
+from agents.state import AgentState
 from agents.subagents.data_agent import run_data_agent
 from agents.subagents.fallback_agent import run_fallback_agent
 from agents.subagents.prediction_agent import run_prediction_agent
@@ -62,10 +56,11 @@ def build_graph():
 
 
 def invoke_chat_graph(graph, request: ChatRequest) -> ChatResponse:
-    """Invoke a compiled graph for one chat request."""
-    initial_state = initial_state_from_chat_request(request)
-    final_state = cast(AgentState, graph.invoke(initial_state))
-    return chat_response_from_state(final_state)
+    """Invoke a compiled graph for one chat request with session memory."""
+    from memory.persistence import run_chat_with_memory
+
+    response, _final_state = run_chat_with_memory(graph, request)
+    return response
 
 
 def run_chat_graph(request: ChatRequest) -> ChatResponse:

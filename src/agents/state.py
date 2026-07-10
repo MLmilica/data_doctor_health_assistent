@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, TypedDict, cast
 
 from schemas.chat import ChatRequest, ChatResponse, ChatDataQueryDetails, ChatRAGDetails
+from schemas.memory import SessionFacts, StepRecord
 from schemas.prediction import LLMPredictionExtraction, PredictionResponse
 from schemas.rag import RAGQueryResult
 from schemas.sql import DataQueryResult
@@ -33,6 +34,12 @@ class AgentState(TypedDict, total=False):
     guardrail_blocked: bool
     guardrail_reason: str | None
     agent_steps: list[str]
+
+    # --- Session memory (loaded before graph, persisted after) ---
+    conversation_history: list[dict[str, Any]]
+    session_facts: dict[str, Any]
+    prior_steps: list[dict[str, Any]]
+    step_records: list[dict[str, Any]]
 
     # --- LLM extraction (prediction node) ---
     extraction: dict[str, Any]
@@ -71,6 +78,27 @@ def append_agent_step(state: AgentState, step: str) -> AgentState:
     steps = list(state.get("agent_steps") or [])
     steps.append(step)
     return _merge_state(state, agent_steps=steps)
+
+
+def get_session_facts(state: AgentState) -> SessionFacts:
+    raw = state.get("session_facts")
+    if not raw:
+        return SessionFacts()
+    return SessionFacts.model_validate(raw)
+
+
+def get_conversation_history(state: AgentState) -> list[dict[str, Any]]:
+    return list(state.get("conversation_history") or [])
+
+
+def get_prior_steps(state: AgentState) -> list[dict[str, Any]]:
+    return list(state.get("prior_steps") or [])
+
+
+def append_step_record(state: AgentState, record: StepRecord) -> AgentState:
+    records = list(state.get("step_records") or [])
+    records.append(record.model_dump(mode="json"))
+    return _merge_state(state, step_records=records)
 
 
 def initial_state_from_chat_request(request: ChatRequest) -> AgentState:

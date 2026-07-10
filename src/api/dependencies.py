@@ -63,8 +63,11 @@ def shutdown() -> None:
     from agents.tools.sql_layer import reset_sql_layer
     from data.vectorstore import reset_vectorstore
 
+    from memory.session_store import reset_session_store
+
     _graph = None
     _ml_models_loaded = False
     ModelRegistry.reset()
     reset_sql_layer()
     reset_vectorstore()
+    reset_session_store()

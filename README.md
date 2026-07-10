@@ -173,6 +173,7 @@ src/
   data/       # loader, schema, profile, document parser
   ml/         # feature engineering, training, prediction
   agents/     # LangGraph orchestrator and sub-agents
+  memory/     # session store, context helpers, persistence
   api/        # FastAPI
   schemas/    # Pydantic models
 ui/           # Streamlit
@@ -190,3 +191,74 @@ If you see `reportMissingImports` warnings:
 
 1. Cmd+Shift+P → **Python: Select Interpreter** → choose `.venv`
 2. Cmd+Shift+P → **Developer: Reload Window**
+
+## Session memory (Phase 4)
+
+Multi-turn chat context is stored **server-side** per `(user_id, session_id)`. The Streamlit UI already sends a stable `session_id`; the API loads and saves session state around each `POST /chat`.
+
+### What was implemented
+
+| Component | Role |
+|-----------|------|
+| `schemas/memory.py` | `ChatTurn` (transcript), `StepRecord` (backend step ledger), `SessionFacts` (structured follow-up context), `ChatSession` (container) |
+| `memory/session_store.py` | In-memory `SessionStore` (POC; replace with DynamoDB/Redis on AWS) |
+| `memory/context.py` | History windowing, prompt formatting, `merge_patient_features` |
+| `memory/persistence.py` | Load session → enrich `AgentState` → persist turn after graph |
+| `agents/state.py` | New fields: `conversation_history`, `session_facts`, `prior_steps`, `step_records` |
+| `agents/orchestrator.py` | Routing uses conversation history; follow-up rule for prediction (e.g. *"What if BMI is 35?"*) |
+| `agents/subagents/prediction_agent.py` | Extraction with session context; merge `last_features`; inherit `last_target` on follow-up |
+
+**Per `/chat` request:**
+
+```text
+load ChatSession → enrich AgentState → graph.invoke → append turns + step + facts → save
+```
+
+**Config** (`src/config.py`):
+
+- `memory_max_turns` (default 10) — transcript window for LLM prompts
+- `memory_max_prior_steps` (default 5) — recent step ledger window
+- `memory_sql_sample_rows` (default 5) — max SQL rows stored in step artifacts
+
+**Limitation:** memory lives in **process RAM**. Restarting the API clears all sessions. LangGraph checkpointer is not used yet (planned for multi-step orchestration).
+
+More detail: `docs/MEMORY.md`.
+
+### How to test memory
+
+**Unit tests (no LLM):**
+
+```bash
+uv run pytest tests/test_memory/ -v
+```
+
+**Full suite** (includes memory + follow-up graph test):
+
+```bash
+uv run pytest
+```
+
+**Manual — Streamlit (recommended):**
+
+1. Start API and UI (see [§5](#5-api-and-streamlit-ui)).
+2. In Chat, send: *"Predict ALT for BMI 28"*
+3. In the **same session** (do not click **New session**), send: *"What if BMI is 35?"*
+4. Expect a new ALT prediction using BMI 35; sidebar shows the same Session ID.
+
+**Manual — smoke script** (same `session_id` for two calls):
+
+```bash
+uv run python scripts/smoke_chat_graph.py \
+  --message "Predict ALT for BMI 28" \
+  --session-id demo-memory \
+  --expect-route prediction
+
+uv run python scripts/smoke_chat_graph.py \
+  --message "What if BMI is 35?" \
+  --session-id demo-memory \
+  --expect-route prediction
+```
+
+**Verify isolation:** click **New session** in Streamlit (new UUID) or use a different `--session-id` — prior features should not carry over.
+
+**Verify restart behavior:** stop and restart the API, then send a follow-up with the old `session_id` — memory is empty (expected for in-memory POC).

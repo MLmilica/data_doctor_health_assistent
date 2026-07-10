@@ -55,5 +55,10 @@ class Settings(BaseSettings):
     rag_min_relevant_chunks: int = 1
     rag_max_grounding_retries: int = 1
 
+    # Session memory (Faza 4)
+    memory_max_turns: int = 10
+    memory_max_prior_steps: int = 5
+    memory_sql_sample_rows: int = 5
+
 
 settings = Settings()

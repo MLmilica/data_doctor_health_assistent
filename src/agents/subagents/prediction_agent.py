@@ -11,14 +11,24 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models import BaseChatModel
 
-from agents.state import _merge_state, AgentState, append_agent_step, set_extraction, set_prediction_result
+from agents.state import (
+    _merge_state,
+    AgentState,
+    append_agent_step,
+    get_conversation_history,
+    get_session_facts,
+    set_extraction,
+    set_prediction_result,
+)
 from config import settings
+from memory.context import build_prediction_extraction_prompt, merge_patient_features
 from ml.feature_mapper import run_prediction
 from schemas.prediction import (
     LLMPredictionExtraction,
     PREDICTION_DISCLAIMER,
     PredictionRequest,
     PredictionResponse,
+    PredictionTarget,
 )
 
 EXTRACTION_SYSTEM_PROMPT = """You extract structured patient features for ML prediction from user messages.
@@ -39,6 +49,7 @@ Rules:
 - Always set is_prediction_request=true.
 - Populate target when inferable; use null only when the user did not specify COPD, ALT, or both.
 - Populate features mentioned in the message; leave others null.
+- For follow-up messages, update only fields the user changed; session context lists prior features.
 - Use assistant_message only when target is unclear and you need clarification.
 """
 
@@ -113,15 +124,24 @@ def _parse_structured_extraction(result: Any) -> LLMPredictionExtraction:
     return LLMPredictionExtraction.model_validate(result)
 
 
-def extract_with_llm(user_message: str) -> LLMPredictionExtraction:
+def extract_with_llm(
+    user_message: str,
+    *,
+    conversation_history: list[dict[str, Any]] | None = None,
+    session_facts: dict[str, Any] | None = None,
+) -> LLMPredictionExtraction:
     """LLM #1: natural language → structured extraction schema."""
     configure_llm_environment()
-    # https://docs.langchain.com/oss/python/langchain/models#structured-output
     llm = _extraction_llm().with_structured_output(LLMPredictionExtraction)
+    prompt = build_prediction_extraction_prompt(
+        user_message,
+        conversation_history=conversation_history,
+        session_facts=session_facts,
+    )
     result = llm.invoke(
         [
             SystemMessage(content=EXTRACTION_SYSTEM_PROMPT),
-            HumanMessage(content=user_message),
+            HumanMessage(content=prompt),
         ]
     )
     return _parse_structured_extraction(result)
@@ -227,7 +247,24 @@ def run_prediction_agent(state: AgentState) -> AgentState:
 
     try:
         require_llm_api_key()
-        extraction = extract_with_llm(user_message)
+        session_facts = get_session_facts(state)
+        extraction = extract_with_llm(
+            user_message,
+            conversation_history=get_conversation_history(state),
+            session_facts=session_facts.model_dump(),
+        )
+        merged_features = merge_patient_features(
+            session_facts.last_features or None,
+            extraction.features,
+        )
+        extraction = extraction.model_copy(update={"features": merged_features})
+        if extraction.target is None and session_facts.last_target:
+            try:
+                extraction = extraction.model_copy(
+                    update={"target": PredictionTarget(session_facts.last_target)},
+                )
+            except ValueError:
+                pass
         state = set_extraction(state, extraction)
 
         if extraction.target is None:

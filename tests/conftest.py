@@ -44,6 +44,15 @@ def ml_artifacts() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_memory_between_tests() -> Generator[None, None, None]:
+    from memory.session_store import reset_session_store
+
+    reset_session_store()
+    yield
+    reset_session_store()
+
+
+@pytest.fixture(autouse=True)
 def openai_api_key_for_agent_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     """Agent unit tests mock LLM calls but still pass the API key guard."""
     if not settings.openai_api_key:

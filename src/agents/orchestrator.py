@@ -8,7 +8,8 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.guardrails import check_input_guardrails
-from agents.state import AgentState, _merge_state, append_agent_step
+from agents.state import AgentState, _merge_state, append_agent_step, get_conversation_history, get_prior_steps, get_session_facts
+from memory.context import build_routing_prompt
 from agents.subagents.prediction_agent import configure_llm_environment, require_llm_api_key, routing_llm
 from config import settings
 from schemas.routing import AgentRoute, LLMRoutingExtraction, RoutingDecision
@@ -155,8 +156,31 @@ def _document_search_signal_count(message: str) -> int:
     return sum(1 for signal in _DOCUMENT_SEARCH_SIGNALS if signal in lowered)
 
 
-def route_with_rules(message: str) -> RoutingDecision | None:
+def _looks_like_prediction_follow_up(message: str) -> bool:
+    lowered = message.lower()
+    if _explicit_prediction_intent(message):
+        return True
+    follow_up_signals = ("what if", "and if", "instead", "change ", "also ", " too")
+    feature_signals = ("bmi", "diet", "exercise", "smoker", "alt", "copd", "readmitted")
+    return any(signal in lowered for signal in follow_up_signals) and any(
+        signal in lowered for signal in feature_signals
+    )
+
+
+def route_with_rules(
+    message: str,
+    *,
+    last_route: str | None = None,
+) -> RoutingDecision | None:
     """Fast deterministic routing for clear keyword matches."""
+    if last_route == AgentRoute.PREDICTION.value and _looks_like_prediction_follow_up(message):
+        return RoutingDecision(
+            route=AgentRoute.PREDICTION,
+            confidence=0.78,
+            reasoning="Follow-up message continues an in-session prediction conversation.",
+            source="rules",
+        )
+
     analytics_hits = _analytics_signal_count(message)
     if analytics_hits > 0 and not _explicit_prediction_intent(message):
         confidence = min(0.95, 0.60 + analytics_hits * 0.10)
@@ -202,14 +226,24 @@ def route_with_rules(message: str) -> RoutingDecision | None:
     )
 
 
-def route_with_llm(message: str) -> RoutingDecision:
+def route_with_llm(
+    message: str,
+    *,
+    conversation_history: list[dict[str, Any]] | None = None,
+    prior_steps: list[dict[str, Any]] | None = None,
+) -> RoutingDecision:
     """LLM routing for ambiguous messages."""
     configure_llm_environment()
     llm = routing_llm().with_structured_output(LLMRoutingExtraction)
+    prompt = build_routing_prompt(
+        message,
+        conversation_history=conversation_history,
+        prior_steps=prior_steps,
+    )
     result = llm.invoke(
         [
             SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
-            HumanMessage(content=message),
+            HumanMessage(content=prompt),
         ]
     )
     if isinstance(result, LLMRoutingExtraction):
@@ -227,16 +261,27 @@ def route_with_llm(message: str) -> RoutingDecision:
     )
 
 
-def decide_route(message: str, *, allow_llm: bool = True) -> RoutingDecision:
+def decide_route(
+    message: str,
+    *,
+    allow_llm: bool = True,
+    conversation_history: list[dict[str, Any]] | None = None,
+    prior_steps: list[dict[str, Any]] | None = None,
+    last_route: str | None = None,
+) -> RoutingDecision:
     """Pick a route using rules first, then optional LLM fallback."""
-    ruled = route_with_rules(message)
+    ruled = route_with_rules(message, last_route=last_route)
     if ruled is not None and ruled.confidence >= settings.routing_confidence_threshold:
         return ruled
 
     if allow_llm:
         try:
             require_llm_api_key()
-            return route_with_llm(message)
+            return route_with_llm(
+                message,
+                conversation_history=conversation_history,
+                prior_steps=prior_steps,
+            )
         except ValueError:
             pass
 
@@ -320,7 +365,15 @@ def run_orchestrator(state: AgentState) -> AgentState:
         )
         return append_agent_step(updated, f"orchestrator:{decision.route.value}")
 
-    decision = _apply_low_confidence(decide_route(guardrail.sanitized_message))
+    session_facts = get_session_facts(state)
+    decision = _apply_low_confidence(
+        decide_route(
+            guardrail.sanitized_message,
+            conversation_history=get_conversation_history(state),
+            prior_steps=get_prior_steps(state),
+            last_route=session_facts.last_route,
+        ),
+    )
     updated = _merge_state(
         state,
         user_message=guardrail.sanitized_message,

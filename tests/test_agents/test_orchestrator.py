@@ -38,6 +38,15 @@ def test_route_with_rules_rag_treatment_plan_exercise() -> None:
     assert decision.source == "rules"
 
 
+def test_route_with_rules_prediction_follow_up() -> None:
+    decision = route_with_rules(
+        "What if BMI is 35?",
+        last_route=AgentRoute.PREDICTION.value,
+    )
+    assert decision is not None
+    assert decision.route == AgentRoute.PREDICTION
+
+
 def test_route_with_rules_ambiguous_returns_none() -> None:
     assert route_with_rules("hello there") is None
 
