@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, cast
 
-from schemas.chat import ChatRequest, ChatResponse, ChatDataQueryDetails
+from schemas.chat import ChatRequest, ChatResponse, ChatDataQueryDetails, ChatRAGDetails
 from schemas.prediction import LLMPredictionExtraction, PredictionResponse
+from schemas.rag import RAGQueryResult
 from schemas.sql import DataQueryResult
 
 
@@ -43,6 +44,9 @@ class AgentState(TypedDict, total=False):
 
     # --- Data agent (SQL node) ---
     data_result: dict[str, Any]
+
+    # --- RAG agent ---
+    rag_result: dict[str, Any]
 
     # --- Output (prediction node → FastAPI) ---
     response_text: str
@@ -122,6 +126,17 @@ def get_data_result(state: AgentState) -> DataQueryResult | None:
     return DataQueryResult.model_validate(raw)
 
 
+def set_rag_result(state: AgentState, result: RAGQueryResult) -> AgentState:
+    return _merge_state(state, rag_result=result.model_dump())
+
+
+def get_rag_result(state: AgentState) -> RAGQueryResult | None:
+    raw = state.get("rag_result")
+    if raw is None:
+        return None
+    return RAGQueryResult.model_validate(raw)
+
+
 def chat_response_from_state(state: AgentState) -> ChatResponse:
     """Map terminal AgentState to the public ChatResponse DTO."""
     session_id = state.get("session_id", "")
@@ -136,15 +151,18 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
 
     prediction_result = get_prediction_result(state)
     data_result = get_data_result(state)
+    rag_result = get_rag_result(state)
     data_query = (
         ChatDataQueryDetails.from_data_query_result(data_result) if data_result else None
     )
+    rag = ChatRAGDetails.from_rag_query_result(rag_result) if rag_result else None
 
     if prediction_result is None:
         return ChatResponse(
             text=response_text,
             session_id=session_id,
             data_query=data_query,
+            rag=rag,
             metadata=_metadata_from_state(state),
         )
 
@@ -160,6 +178,7 @@ def chat_response_from_state(state: AgentState) -> ChatResponse:
         update={
             "metadata": _metadata_from_state(state),
             "data_query": data_query,
+            "rag": rag,
         }
     )
 

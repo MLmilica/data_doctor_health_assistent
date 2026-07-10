@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from schemas.citation import Citation
 from schemas.prediction import FeatureMappingNote, PredictionResponse, PREDICTION_DISCLAIMER
+from schemas.rag import RAG_DISCLAIMER, RAGQueryResult
 from schemas.sql import DATA_QUERY_DISCLAIMER, DataQueryResult
 
 DEFAULT_USER_ID = "default-user"
@@ -88,6 +90,27 @@ class ChatDataQueryDetails(BaseModel):
         )
 
 
+class ChatRAGDetails(BaseModel):
+    """Structured RAG output exposed to the UI."""
+
+    retrieved_count: int
+    relevant_count: int
+    citations: list[Citation] = Field(default_factory=list)
+    grounded: bool
+    grounding_retry_count: int = 0
+    disclaimer: str = RAG_DISCLAIMER
+
+    @classmethod
+    def from_rag_query_result(cls, result: RAGQueryResult) -> ChatRAGDetails:
+        return cls(
+            retrieved_count=result.retrieved_count,
+            relevant_count=result.relevant_count,
+            citations=result.citations,
+            grounded=result.grounded,
+            grounding_retry_count=result.grounding_retry_count,
+        )
+
+
 class ChatAgentMetadata(BaseModel):
     """Runtime metadata for observability and transparency in the UI sidebar."""
 
@@ -117,6 +140,10 @@ class ChatResponse(BaseModel):
     data_query: ChatDataQueryDetails | None = Field(
         default=None,
         description="Present when the data agent executed a SQL query.",
+    )
+    rag: ChatRAGDetails | None = Field(
+        default=None,
+        description="Present when the RAG agent searched clinical documents.",
     )
     metadata: ChatAgentMetadata = Field(default_factory=ChatAgentMetadata)
 
@@ -171,5 +198,13 @@ class HealthResponse(BaseModel):
     ml_models_loaded: bool = Field(
         default=False,
         description="True when COPD/ALT model artifacts are available on disk.",
+    )
+    documents_indexed: bool = Field(
+        default=False,
+        description="True when the Chroma clinical document index has at least one chunk.",
+    )
+    document_chunk_count: int = Field(
+        default=0,
+        description="Number of indexed document sections in Chroma.",
     )
     detail: str | None = None

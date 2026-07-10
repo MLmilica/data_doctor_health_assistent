@@ -26,7 +26,7 @@ from ml.features import (  # noqa: E402
     COPD_REQUIRED_COLS,
     _default_for_column,
 )
-from schemas.chat import ChatDataQueryDetails, ChatPredictionDetails, ChatResponse, HealthResponse  # noqa: E402
+from schemas.chat import ChatDataQueryDetails, ChatPredictionDetails, ChatRAGDetails, ChatResponse, HealthResponse  # noqa: E402
 from schemas.data import DataProfile  # noqa: E402
 from schemas.prediction import PatientFeatures, PredictionRequest, PredictionTarget  # noqa: E402
 
@@ -130,6 +130,27 @@ def _render_data_query_details(details: ChatDataQueryDetails) -> None:
     st.caption(details.disclaimer)
 
 
+def _render_rag_details(details: ChatRAGDetails) -> None:
+    st.caption(
+        f"Retrieved: {details.retrieved_count} | Relevant: {details.relevant_count} | "
+        f"Grounded: {details.grounded} | Retries: {details.grounding_retry_count}"
+    )
+
+    if details.citations:
+        with st.expander("Sources", expanded=True):
+            for index, citation in enumerate(details.citations, start=1):
+                st.markdown(
+                    f"**{index}. {citation.source_file} — {citation.section_name}**"
+                )
+                if citation.score is not None:
+                    st.caption(f"score: {citation.score:.2f}")
+                st.write(citation.snippet)
+    else:
+        st.caption("No relevant citations were retained after grading.")
+
+    st.caption(details.disclaimer)
+
+
 def _render_chat_response(response: ChatResponse) -> None:
     st.markdown(response.text)
 
@@ -143,6 +164,10 @@ def _render_chat_response(response: ChatResponse) -> None:
     if response.data_query is not None:
         with st.expander("Data query details", expanded=True):
             _render_data_query_details(response.data_query)
+
+    if response.rag is not None:
+        with st.expander("Document sources", expanded=True):
+            _render_rag_details(response.rag)
 
     meta_parts = _routing_metadata_parts(response)
     if response.metadata.llm_model:
@@ -179,6 +204,8 @@ def _render_sidebar() -> None:
             {
                 "llm_configured": health.llm_configured,
                 "ml_models_loaded": health.ml_models_loaded,
+                "documents_indexed": health.documents_indexed,
+                "document_chunk_count": health.document_chunk_count,
                 "detail": health.detail,
             }
         )
@@ -236,6 +263,8 @@ def _chat_tab() -> None:
             "route_source": response.metadata.route_source,
             "guardrail_blocked": response.metadata.guardrail_blocked,
             "data_rows": response.data_query.row_count if response.data_query else None,
+            "rag_relevant": response.rag.relevant_count if response.rag else None,
+            "rag_grounded": response.rag.grounded if response.rag else None,
         }
         st.rerun()
     except httpx.HTTPStatusError as exc:

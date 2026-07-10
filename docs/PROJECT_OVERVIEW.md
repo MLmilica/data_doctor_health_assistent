@@ -135,7 +135,7 @@ Writes `docs/assets/chat_graph.png`. Commit the updated image with your graph ch
 - `orchestrator` applies guardrails and routes to a specialist agent
 - `predict` calls `run_prediction_agent` (LLM extract → ML → synthesis)
 - `data` calls `run_data_agent` (LLM SQL → validated DuckDB query → LLM synthesis)
-- `rag` is a stub until vector search ships
+- `rag` calls `run_rag_agent` (retrieve → corrective grade → synthesis → grounding verify)
 - `fallback` handles guardrail blocks, low-confidence routing, and unclear requests
 - `run_chat_graph(request)` is the high-level helper used by API/UI
 
@@ -153,6 +153,7 @@ Use these scripts to verify real graph behavior (not mocked unit tests).
 | `scripts/smoke_chat_graph.py` | Full path: `ChatRequest -> LangGraph -> orchestrator -> specialist agent -> ChatResponse` |
 | `scripts/smoke_prediction_agent.py` | Prediction agent only (bypasses orchestrator and graph routing) |
 | `scripts/regenerate_graph_png.py` | Refresh `docs/assets/chat_graph.png` after graph topology changes |
+| `scripts/index_documents.py` | Index `data/documents/*.md` into Chroma (`data/chroma/`) |
 
 `smoke_chat_graph.py` prints JSON with `request`, **`routing`**, `response`, and `state_error`.  
 A one-line routing summary is printed to **stderr** before the JSON.
@@ -611,7 +612,229 @@ Open `http://localhost:8501` → **Chat** tab. Try the same prompts as in sectio
 | `For each exercise frequency level, show the count of patients in each COPD severity class` | `data` | Multi-column `GROUP BY`; uses `chronic_obstructive_pulmonary_disease` |
 | `What is the average number of days hospitalized for urban vs rural patients with poor diet quality?` | `data` | `WHERE` + `GROUP BY urban` |
 | `Among high-income patients, which diagnosis codes are most common?` | `data` | Filter + `GROUP BY diagnosis_code` + sort |
-| `What does the COPD guideline say about exercise?` | `rag` | Stub response for now |
+| `What low-impact exercise is recommended in treatment plans?` | `rag` | Should return citations (see RAG table #1) |
+| `Summarize lifestyle recommendations including diet and exercise from the clinical documents` | `rag` | Summarize across docs (RAG table #4) |
+| `What does the COPD guideline say about exercise?` | `rag` | Routes to RAG; likely no relevant docs (RAG table #8) |
 | `What medication should the patient take for COPD?` | `fallback` | Guardrail block |
 | `hello there` | `fallback` | Low confidence / clarification |
+
+---
+
+## RAG Agent (Phase 3) — Example prompts
+
+RAG searches indexed markdown in `data/documents/` via Chroma (corrective grading + grounding verify).  
+The corpus is synthetic clinical notes — **not** formal COPD/ALT guideline libraries. Prompts marked **No** test honest “not in documents” behavior.
+
+**Prerequisites:** LLM API key, `data/documents/*.md`, indexed vector store (`data/chroma/`).
+
+```bash
+uv run python scripts/index_documents.py
+uv run python scripts/index_documents.py --reset   # rebuild collection from scratch
+```
+
+Requires `OPENAI_API_KEY` in `.env` (embeddings use `text-embedding-3-small`).
+
+| # | Example prompt | In corpus? | What it exercises |
+|---|----------------|------------|-------------------|
+| 1 | `What low-impact exercise is recommended in treatment plans?` | **Yes** | Treatment-plan retrieval; rules routing; citations |
+| 2 | `What exercise recommendations appear in documents about rheumatology or joint pain?` | **Yes** | Topic-focused search (e.g. hydroxychloroquine / joint pain notes) |
+| 3 | `What does the treatment plan say about smoking cessation counseling?` | **Yes** | Smoking / counseling snippets in treatment plans |
+| 4 | `Summarize lifestyle recommendations including diet and exercise from the clinical documents` | **Yes** | Broad summarize; query expansion; keyword fallback |
+| 5 | `What hydroxychloroquine recommendations appear in treatment plans?` | **Yes** | Medication-focused document search |
+| 6 | `What recommendations are given for balanced diet and regular exercise in clinical documents?` | **Yes** | Diet + exercise cross-document synthesis |
+| 7 | `What gentle exercise programs are documented for patients with fatigue or muscle weakness?` | **Yes** | Symptom-specific lifestyle retrieval |
+| 8 | `What does the COPD guideline say about exercise?` | **No** | Routes to RAG; expect no relevant chunks (no COPD text in corpus) |
+| 9 | `Summarize the ALT monitoring document with citations` | **No** | Routes to RAG; no dedicated ALT monitoring doc — “not in documents” |
+| 10 | `What does our readmission follow-up policy say after discharge?` | **No** | Routes to RAG; no formal policy docs — graceful no-answer |
+
+**Smoke / curl:**
+
+```bash
+uv run python scripts/smoke_chat_graph.py --example rag --expect-route rag
+uv run python scripts/smoke_chat_graph.py \
+  --message "What low-impact exercise is recommended in treatment plans?" \
+  --expect-route rag
+```
+
+See also `docs/RAG.md` for implementation details and troubleshooting.
+
+### Architecture sketch (internal pipeline)
+
+Phase 3 keeps **one** `rag` node in the main LangGraph. Corrective grading and self-grounding run **inside** `run_rag_agent` as a function pipeline (same style as `data_agent`), not as new top-level graph nodes.
+
+```text
+run_rag_agent(AgentState)
+  │
+  ├─ retrieve_chunks()        # Chroma top-k (default k=5), no LLM
+  ├─ grade_chunks()           # corrective RAG: LLM relevance per chunk
+  ├─ if no relevant chunks → not_found_response()
+  ├─ synthesize_answer()      # LLM answer from filtered chunks + citations
+  ├─ verify_grounding()       # self-RAG lite: is answer supported by chunks?
+  └─ if not grounded && retry_count < 1 → synthesize_answer(strict=True) once more
+     else if still not grounded → safe_fallback_response()
+```
+
+Optional later: refactor the same steps into a **RAG sub-graph** without changing `graph.py` or the public `run_rag_agent` signature.
+
+#### Internal flow
+
+```text
+user_message
+    → retrieve top-5 chunks (Chroma)
+    → grade each chunk: relevant? yes/no
+    → keep only relevant chunks (0..5)
+    → if none: "We don't have relevant information in the indexed documents."
+    → synthesize prose answer (only from kept chunks)
+    → verify: grounded in those chunks?
+         → yes  → return answer + citations in metadata
+         → no   → one strict retry, then admit uncertainty / not in documents
+```
+
+#### Packaging
+
+| Layer | Responsibility |
+|-------|----------------|
+| `src/data/vectorstore.py` | Index `data/documents/*.md`, Chroma search |
+| `src/agents/tools/rag_retrieval.py` | Thin wrapper: `retrieve_chunks(query, k)` |
+| `src/agents/subagents/rag_agent.py` | Pipeline orchestration: `run_rag_agent` + step functions |
+| `src/schemas/citation.py` | `Citation`, `RetrievedChunk` |
+| `src/schemas/rag.py` | `RAGQueryResult`, LLM structured outputs for grade/verify |
+| `src/agents/state.py` | `rag_result` on shared `AgentState` |
+| `src/schemas/chat.py` | `ChatRAGDetails` on `ChatResponse` |
+| `ui/app.py` | Expander for citations (parallel to `data_query`) |
+
+#### Schemas (`src/schemas/citation.py`)
+
+```python
+class Citation(BaseModel):
+    source_file: str
+    section_name: str
+    snippet: str
+    score: float | None = None          # retrieval score from Chroma
+
+class RetrievedChunk(BaseModel):
+    chunk_id: str
+    source_file: str
+    section_name: str
+    content: str
+    score: float
+    relevant: bool | None = None        # set after grade_chunks()
+    relevance_reason: str | None = None
+```
+
+#### Schemas (`src/schemas/rag.py`)
+
+```python
+RAG_DISCLAIMER = "Internal prototype — answers from indexed clinical documents only. Not clinical advice."
+
+class LLMChunkGrade(BaseModel):
+    chunk_id: str
+    relevant: bool
+    reason: str = ""
+
+class LLMChunkGradingResult(BaseModel):
+    grades: list[LLMChunkGrade]
+
+class LLMGroundingCheck(BaseModel):
+    grounded: bool
+    unsupported_claims: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+
+class RAGQueryResult(BaseModel):
+    user_message: str
+    retrieved_count: int
+    relevant_count: int
+    citations: list[Citation]
+    chunks_used: list[RetrievedChunk]   # only relevant chunks passed to synthesis
+    grounded: bool
+    grounding_retry_count: int = 0
+    disclaimer: str = RAG_DISCLAIMER
+```
+
+#### Shared graph state (`AgentState`)
+
+```python
+# Added to AgentState (dict on wire, like data_result):
+rag_result: dict[str, Any]   # RAGQueryResult.model_dump()
+
+# Helpers (mirror set_data_result / get_data_result):
+def set_rag_result(state, result: RAGQueryResult) -> AgentState: ...
+def get_rag_result(state) -> RAGQueryResult | None: ...
+```
+
+#### Chat API (`ChatResponse`)
+
+```python
+class ChatRAGDetails(BaseModel):
+    retrieved_count: int
+    relevant_count: int
+    citations: list[Citation]
+    grounded: bool
+    disclaimer: str = RAG_DISCLAIMER
+
+# ChatResponse field:
+rag: ChatRAGDetails | None = None
+```
+
+`response.text` = synthesized prose (primary chat message).  
+`response.rag` + UI expander = sources for verification (like `data_query` for SQL).
+
+#### Function signatures (`rag_agent.py`)
+
+```python
+def run_rag_agent(state: AgentState) -> AgentState:
+    """LangGraph node entry: full RAG pipeline."""
+
+def retrieve_chunks(user_message: str, *, k: int = 5) -> list[RetrievedChunk]:
+    """Chroma similarity search via rag_retrieval tool."""
+
+def grade_chunks(user_message: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Corrective RAG: LLM marks each chunk relevant/not; returns filtered list."""
+
+def synthesize_rag_answer(
+    user_message: str,
+    chunks: list[RetrievedChunk],
+    *,
+    strict: bool = False,
+) -> str:
+    """LLM synthesis from read-only chunk JSON; strict=True on grounding retry."""
+
+def verify_grounding(
+    user_message: str,
+    answer: str,
+    chunks: list[RetrievedChunk],
+) -> LLMGroundingCheck:
+    """Self-RAG lite: check answer against the same chunks used for synthesis."""
+
+def build_rag_facts_payload(...) -> dict[str, Any]:
+    """Read-only JSON for synthesis / verify prompts (no invented text)."""
+
+def not_found_response() -> str: ...
+def safe_fallback_response(check: LLMGroundingCheck) -> str: ...
+```
+
+#### Config (defaults in `src/config.py`)
+
+```python
+rag_top_k: int = 5
+rag_min_relevant_chunks: int = 1
+rag_max_grounding_retries: int = 1
+```
+
+#### Expected API / UI behavior (after implementation)
+
+- `metadata.routed_to` = `"rag"`
+- `response.text` = natural-language answer grounded in documents, or explicit “not in documents”
+- `response.rag` = citation metadata (`source_file`, `section_name`, `snippet`, `grounded`)
+- Streamlit expander: **Sources** with excerpts (like SQL expander for data agent)
+
+#### Implementation order
+
+1. `citation.py` + `rag.py` schemas  
+2. `vectorstore.py` + `scripts/index_documents.py`  
+3. `rag_retrieval.py` tool  
+4. `rag_agent.py` pipeline (`retrieve` → `grade` → `synthesize` → `verify`)  
+5. `state.py` + `chat.py` + UI expander  
+6. Tests (mock retrieval + grade + verify)  
+7. Docs / smoke with real documents  
 

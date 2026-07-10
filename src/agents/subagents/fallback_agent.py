@@ -11,8 +11,8 @@ GENERAL_HELP_MESSAGE = """I can help with:
   (e.g. "Predict ALT for a patient with BMI 30")
 - **Data analytics** — SQL-style questions over the patient dataset
   (e.g. "How many readmissions by month?")
-- **Document search** — clinical guidelines and policies (coming soon)
-  (e.g. "What does the COPD guideline say about exercise?")
+- **Document search** — clinical documents, treatment plans, guidelines
+  (e.g. "What low-impact exercise is recommended in treatment plans?")
 
 This is an internal analytics prototype — not clinical advice."""
 

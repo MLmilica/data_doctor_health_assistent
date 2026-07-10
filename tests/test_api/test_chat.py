@@ -22,6 +22,7 @@ def client() -> Generator[TestClient, None, None]:
 def test_health_ok_when_llm_and_ml_ready(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("api.routes.health.is_llm_configured", lambda: True)
     monkeypatch.setattr("api.routes.health.are_ml_models_loaded", lambda: True)
+    monkeypatch.setattr("api.routes.health.get_document_index_status", lambda: (True, 42))
 
     response = client.get("/health")
 
@@ -31,11 +32,14 @@ def test_health_ok_when_llm_and_ml_ready(client: TestClient, monkeypatch: pytest
     assert payload["api"] == "up"
     assert payload["llm_configured"] is True
     assert payload["ml_models_loaded"] is True
+    assert payload["documents_indexed"] is True
+    assert payload["document_chunk_count"] == 42
 
 
 def test_health_degraded_when_llm_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("api.routes.health.is_llm_configured", lambda: False)
     monkeypatch.setattr("api.routes.health.are_ml_models_loaded", lambda: True)
+    monkeypatch.setattr("api.routes.health.get_document_index_status", lambda: (True, 10))
 
     response = client.get("/health")
 

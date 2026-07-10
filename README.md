@@ -107,9 +107,11 @@ START -> orchestrator -> predict | data | rag | fallback -> END
 
 Regenerate after graph changes: `uv run python scripts/regenerate_graph_png.py`
 
+Index clinical documents for RAG: `uv run python scripts/index_documents.py` (see `docs/RAG.md`).
+
 - `prediction` — COPD/ALT ML predictions (needs LLM + trained models)
 - `data` — LLM SQL → DuckDB → LLM synthesis; SQL and result table stay in the UI expander for verification (needs LLM + CSV)
-- `rag` — stub for document search (Phase 3)
+- `rag` — document search over indexed `data/documents/` via Chroma (needs LLM + OpenAI embeddings + index)
 - `fallback` — guardrail blocks, unclear requests, low-confidence routing
 
 `POST /chat` currently requires an LLM API key in `.env` for all routes.

@@ -24,6 +24,16 @@ def are_ml_models_loaded() -> bool:
     return _ml_models_loaded
 
 
+def get_document_index_status() -> tuple[bool, int]:
+    try:
+        from data.vectorstore import get_vectorstore
+
+        count = get_vectorstore().chunk_count()
+        return count > 0, count
+    except Exception:
+        return False, 0
+
+
 def get_graph():
     if _graph is None:
         raise RuntimeError("LangGraph is not initialized. API startup may have failed.")
@@ -51,8 +61,10 @@ def shutdown() -> None:
     global _graph, _ml_models_loaded
 
     from agents.tools.sql_layer import reset_sql_layer
+    from data.vectorstore import reset_vectorstore
 
     _graph = None
     _ml_models_loaded = False
     ModelRegistry.reset()
     reset_sql_layer()
+    reset_vectorstore()

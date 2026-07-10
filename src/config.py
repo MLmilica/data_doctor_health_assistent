@@ -46,5 +46,14 @@ class Settings(BaseSettings):
     # SQL / data agent
     sql_max_rows: int = 1000
 
+    # RAG / vectorstore
+    rag_collection_name: str = "clinical_documents"
+    rag_top_k: int = 5
+    rag_retrieve_k: int = 15
+    rag_embedding_model: str = "text-embedding-3-small"
+    rag_index_batch_size: int = 128
+    rag_min_relevant_chunks: int = 1
+    rag_max_grounding_retries: int = 1
+
 
 settings = Settings()

@@ -109,3 +109,47 @@ def test_graph_guardrail_block_uses_fallback() -> None:
     assert response.metadata.routed_to == AgentRoute.FALLBACK.value
     assert response.metadata.guardrail_blocked is True
     assert response.prediction is None
+
+
+@patch("agents.subagents.rag_agent.verify_grounding")
+@patch("agents.subagents.rag_agent.synthesize_rag_answer")
+@patch("agents.subagents.rag_agent.grade_chunks")
+@patch("agents.subagents.rag_agent.retrieve_chunks_for_query")
+@patch("agents.subagents.rag_agent.get_vectorstore")
+def test_graph_routes_rag_message(
+    mock_get_vectorstore: Any,
+    mock_retrieve: Any,
+    mock_grade: Any,
+    mock_synthesize: Any,
+    mock_verify: Any,
+) -> None:
+    from schemas.citation import RetrievedChunk
+    from schemas.rag import LLMGroundingCheck
+
+    mock_store = mock_get_vectorstore.return_value
+    mock_store.is_indexed.return_value = True
+
+    chunk = RetrievedChunk(
+        chunk_id="copd_guideline.md::exercise",
+        source_file="copd_guideline.md",
+        section_name="Exercise",
+        content="Patients with COPD should perform regular low-intensity exercise.",
+        score=0.9,
+        relevant=True,
+    )
+    mock_retrieve.return_value = [chunk]
+    mock_grade.return_value = [chunk]
+    mock_synthesize.return_value = "Regular low-intensity exercise is recommended."
+    mock_verify.return_value = LLMGroundingCheck(grounded=True)
+
+    response = run_chat_graph(
+        ChatRequest(
+            message="What does the COPD guideline say about exercise?",
+            session_id="sess-rag",
+        ),
+    )
+
+    assert response.metadata.routed_to == AgentRoute.RAG.value
+    assert response.rag is not None
+    assert response.rag.grounded is True
+    assert "exercise" in response.text.lower()

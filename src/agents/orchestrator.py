@@ -18,13 +18,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You route analyst chat messages to the correct s
 Routes:
 - prediction: COPD/ALT ML predictions from patient attributes (BMI, diet, exercise, smoker, etc.)
 - data: SQL/analytics questions over the patient CSV dataset (counts, averages, trends, readmissions)
-- rag: search clinical documents, guidelines, policies; citation-style questions
+- rag: search clinical documents, guidelines, policies, treatment plans; citation-style questions; what documents recommend or say
 - fallback: greetings, chit-chat, unrelated topics, or requests that do not fit the above
 
 Rules:
 - Choose exactly one route.
 - Dataset analytics (counts, averages, groupings, distributions) -> data even if COPD/ALT column names appear.
 - prediction is only for inferring a class/value for a specific patient scenario (usually with the word predict).
+- Questions about what clinical documents, guidelines, policies, or treatment plans say/recommend -> rag (not fallback).
 - Use confidence >= 0.8 only when intent is clear.
 - Set requires_clarification=true when the message is ambiguous and cannot be executed safely.
 - Provide a short clarification_prompt when requires_clarification is true.
@@ -66,15 +67,21 @@ _RULE_KEYWORDS: dict[AgentRoute, tuple[str, ...]] = {
     ),
     AgentRoute.RAG: (
         "document",
+        "documents",
         "guideline",
+        "guidelines",
         "policy",
+        "treatment plan",
+        "clinical note",
         "search doc",
         "according to",
         "what does the",
         "what does our",
+        "recommended in",
+        "mentioned in",
+        "summarize",
         "cite",
         "citation",
-        "clinical note",
     ),
 }
 
@@ -103,6 +110,30 @@ _PREDICTION_INTENT_SIGNALS: tuple[str, ...] = (
     "forecast",
 )
 
+_DOCUMENT_SEARCH_SIGNALS: tuple[str, ...] = (
+    "treatment plan",
+    "clinical document",
+    "clinical documents",
+    "in documents",
+    "from documents",
+    "from the document",
+    "guideline",
+    "guidelines",
+    "policy",
+    "according to the",
+    "according to our",
+    "what does the",
+    "what does our",
+    "search our",
+    "search the",
+    "recommended in",
+    "mentioned in",
+    "summarize",
+    "summarise",
+    "cite",
+    "citation",
+)
+
 
 def _keyword_score(message: str, keywords: tuple[str, ...]) -> int:
     lowered = message.lower()
@@ -119,6 +150,11 @@ def _analytics_signal_count(message: str) -> int:
     return sum(1 for signal in _ANALYTICS_SIGNALS if signal in lowered)
 
 
+def _document_search_signal_count(message: str) -> int:
+    lowered = message.lower()
+    return sum(1 for signal in _DOCUMENT_SEARCH_SIGNALS if signal in lowered)
+
+
 def route_with_rules(message: str) -> RoutingDecision | None:
     """Fast deterministic routing for clear keyword matches."""
     analytics_hits = _analytics_signal_count(message)
@@ -130,6 +166,19 @@ def route_with_rules(message: str) -> RoutingDecision | None:
             reasoning=(
                 f"Detected {analytics_hits} dataset analytics signal(s) "
                 "without explicit prediction intent."
+            ),
+            source="rules",
+        )
+
+    document_hits = _document_search_signal_count(message)
+    if document_hits > 0 and not _explicit_prediction_intent(message) and analytics_hits == 0:
+        confidence = min(0.95, 0.60 + document_hits * 0.10)
+        return RoutingDecision(
+            route=AgentRoute.RAG,
+            confidence=confidence,
+            reasoning=(
+                f"Detected {document_hits} clinical document search signal(s) "
+                "without dataset analytics or prediction intent."
             ),
             source="rules",
         )

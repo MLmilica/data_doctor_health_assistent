@@ -29,6 +29,15 @@ def test_route_with_rules_rag() -> None:
     assert decision.route == AgentRoute.RAG
 
 
+def test_route_with_rules_rag_treatment_plan_exercise() -> None:
+    decision = route_with_rules(
+        "What low-impact exercise is recommended in treatment plans?",
+    )
+    assert decision is not None
+    assert decision.route == AgentRoute.RAG
+    assert decision.source == "rules"
+
+
 def test_route_with_rules_ambiguous_returns_none() -> None:
     assert route_with_rules("hello there") is None
 

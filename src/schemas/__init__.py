@@ -7,6 +7,7 @@ from schemas.chat import (
     ChatResponse,
     HealthResponse,
 )
+from schemas.citation import Citation, RetrievedChunk
 from schemas.data import (
     ColumnProfile,
     ColumnSchema,
@@ -20,6 +21,12 @@ from schemas.prediction import (
     PredictionResponse,
     PredictionTarget,
 )
+from schemas.rag import (
+    LLMChunkGrade,
+    LLMChunkGradingResult,
+    LLMGroundingCheck,
+    RAGQueryResult,
+)
 from schemas.routing import AgentRoute, RoutingDecision
 
 __all__ = [
@@ -27,16 +34,22 @@ __all__ = [
     "ChatPredictionDetails",
     "ChatRequest",
     "ChatResponse",
+    "Citation",
     "ColumnProfile",
     "ColumnSchema",
     "DataProfile",
     "DatasetSchema",
     "HealthResponse",
+    "LLMChunkGrade",
+    "LLMChunkGradingResult",
+    "LLMGroundingCheck",
     "LLMPredictionExtraction",
     "PatientFeatures",
     "PredictionRequest",
     "PredictionResponse",
     "PredictionTarget",
+    "RAGQueryResult",
+    "RetrievedChunk",
     "AgentRoute",
     "RoutingDecision",
 ]
