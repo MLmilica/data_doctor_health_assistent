@@ -17,7 +17,20 @@ class AgentRoute(str, Enum):
     FALLBACK = "fallback"
 
 
-RoutingSource = Literal["rules", "llm", "guardrail"]
+class OrchestratorAction(str, Enum):
+    """What the orchestrator node tells the graph to do next."""
+
+    ROUTE = "route"
+    SYNTHESIZE = "synthesize"
+    FINISH = "finish"
+
+
+SPECIALIST_AGENT_ROUTES: frozenset[AgentRoute] = frozenset(
+    {AgentRoute.PREDICTION, AgentRoute.DATA, AgentRoute.RAG},
+)
+
+
+RoutingSource = Literal["rules", "llm", "guardrail", "multi_step"]
 
 
 class RoutingDecision(BaseModel):
@@ -49,3 +62,15 @@ class LLMRoutingExtraction(BaseModel):
         default=None,
         description="Question to ask the user when clarification is required.",
     )
+
+
+class LLMMultiStepPlan(BaseModel):
+    """Structured output for orchestrator loop decisions after the first agent."""
+
+    action: OrchestratorAction
+    route: AgentRoute | None = Field(
+        default=None,
+        description="Required when action=route; target specialist agent.",
+    )
+    reasoning: str = ""
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)

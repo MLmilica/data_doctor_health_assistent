@@ -12,7 +12,7 @@ from agents.state import AgentState, _merge_state, append_agent_step, get_conver
 from memory.context import build_routing_prompt
 from agents.subagents.prediction_agent import configure_llm_environment, require_llm_api_key, routing_llm
 from config import settings
-from schemas.routing import AgentRoute, LLMRoutingExtraction, RoutingDecision
+from schemas.routing import AgentRoute, LLMRoutingExtraction, OrchestratorAction, RoutingDecision
 
 ORCHESTRATOR_SYSTEM_PROMPT = """You route analyst chat messages to the correct specialist agent.
 
@@ -115,6 +115,9 @@ _DOCUMENT_SEARCH_SIGNALS: tuple[str, ...] = (
     "treatment plan",
     "clinical document",
     "clinical documents",
+    "document",
+    "documents",
+    "what documents",
     "in documents",
     "from documents",
     "from the document",
@@ -341,10 +344,12 @@ def routing_to_state_updates(decision: RoutingDecision) -> dict[str, Any]:
 
 def run_orchestrator(state: AgentState) -> AgentState:
     """
-    LangGraph node: guardrails → route decision → write routing fields to state.
+    LangGraph node: guardrails → multi-step plan → write routing fields to state.
 
-    Does not produce user-facing response text; specialist/fallback nodes do that.
+    Does not produce user-facing response text; specialist/fallback/synthesize nodes do that.
     """
+    from agents.multi_step import count_specialist_steps, plan_next_step, plan_to_state_updates
+
     started = time.perf_counter()
     user_message = state.get("user_message", "")
     guardrail = check_input_guardrails(user_message)
@@ -361,27 +366,45 @@ def run_orchestrator(state: AgentState) -> AgentState:
             user_message=guardrail.sanitized_message,
             guardrail_blocked=True,
             guardrail_reason=guardrail.blocked_reason,
+            orchestrator_action=OrchestratorAction.ROUTE.value,
             **routing_to_state_updates(decision),
         )
         return append_agent_step(updated, f"orchestrator:{decision.route.value}")
 
-    session_facts = get_session_facts(state)
-    decision = _apply_low_confidence(
-        decide_route(
-            guardrail.sanitized_message,
-            conversation_history=get_conversation_history(state),
-            prior_steps=get_prior_steps(state),
-            last_route=session_facts.last_route,
-        ),
-    )
+    plan = plan_next_step(state)
+    updates = plan_to_state_updates(plan)
+
+    if count_specialist_steps(state) == 0 and plan.action == OrchestratorAction.ROUTE and plan.route is not None:
+        decision = RoutingDecision(
+            route=plan.route,
+            confidence=plan.confidence,
+            reasoning=plan.reasoning,
+            source="rules" if plan.route != AgentRoute.FALLBACK else "multi_step",
+        )
+        decision = _apply_low_confidence(decision)
+        updates.update(routing_to_state_updates(decision))
+        if decision.route == AgentRoute.FALLBACK:
+            plan = plan.model_copy(
+                update={
+                    "route": AgentRoute.FALLBACK,
+                    "reasoning": decision.reasoning,
+                    "confidence": decision.confidence,
+                },
+            )
+            updates["route"] = AgentRoute.FALLBACK.value
+            updates["orchestrator_action"] = OrchestratorAction.ROUTE.value
+
     updated = _merge_state(
         state,
         user_message=guardrail.sanitized_message,
         guardrail_blocked=False,
         guardrail_reason=None,
-        **routing_to_state_updates(decision),
+        **updates,
     )
-    updated = append_agent_step(updated, f"orchestrator:{decision.route.value}")
+    step_label = f"orchestrator:{plan.action.value}"
+    if plan.action == OrchestratorAction.ROUTE and plan.route is not None:
+        step_label = f"orchestrator:{plan.route.value}"
+    updated = append_agent_step(updated, step_label)
     latency = state.get("latency_ms")
     orchestrator_ms = round((time.perf_counter() - started) * 1000, 2)
     if latency is None:

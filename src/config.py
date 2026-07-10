@@ -60,5 +60,8 @@ class Settings(BaseSettings):
     memory_max_prior_steps: int = 5
     memory_sql_sample_rows: int = 5
 
+    # Multi-step orchestrator (Faza 5)
+    orchestrator_max_agent_steps: int = 3
+
 
 settings = Settings()

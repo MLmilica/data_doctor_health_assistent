@@ -73,3 +73,27 @@ def test_sql_layer_requires_patients_table() -> None:
     layer = SqlLayer()
     with pytest.raises(SqlValidationError, match="patients"):
         layer.validate_sql("SELECT 1")
+
+
+def test_sql_layer_blocks_hallucinated_table_names() -> None:
+    layer = SqlLayer()
+    with pytest.raises(SqlValidationError, match="Unknown table `avg_bmi`"):
+        layer.validate_sql(
+            "SELECT (SELECT AVG(bmi) FROM patients) AS average_bmi FROM avg_bmi"
+        )
+
+
+def test_sql_layer_allows_cte_over_patients() -> None:
+    layer = SqlLayer()
+    safe_sql = layer.validate_sql(
+        f"""
+        WITH avg_bmi AS (
+            SELECT AVG(bmi) AS average_bmi FROM {PATIENT_TABLE_NAME}
+        )
+        SELECT average_bmi FROM avg_bmi
+        """
+    )
+    assert "avg_bmi" in safe_sql.lower()
+    result = layer.execute(safe_sql)
+    assert result.row_count == 1
+    assert "average_bmi" in result.columns

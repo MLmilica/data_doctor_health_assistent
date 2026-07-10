@@ -173,7 +173,7 @@ A one-line routing summary is printed to **stderr** before the JSON.
 | Field | Pass condition |
 |-------|----------------|
 | `state_error` | `null` for successful runs |
-| `routing.routed_to` | `prediction`, `data`, `rag`, or `fallback` |
+| `routing.routed_to` | `prediction`, `data`, `rag`, `multi`, or `fallback` |
 | `routing.route_source` | `rules`, `llm`, or `guardrail` |
 | `routing.agent_steps` | e.g. `["orchestrator:data", "data"]` |
 | `response.session_id` | matches `--session-id` (or default `smoke-session`) |
@@ -459,7 +459,7 @@ Check `response.metadata` for routing transparency:
 
 | Field | Meaning |
 |-------|---------|
-| `routed_to` | Specialist that handled the message (`prediction`, `data`, `rag`, `fallback`) |
+| `routed_to` | Specialist that handled the message (`prediction`, `data`, `rag`, `multi`, `fallback`) |
 | `route_confidence` | Orchestrator confidence (0–1) |
 | `route_source` | `rules`, `llm`, or `guardrail` |
 | `guardrail_blocked` | `true` when input was blocked before routing |
@@ -837,4 +837,204 @@ rag_max_grounding_retries: int = 1
 5. `state.py` + `chat.py` + UI expander  
 6. Tests (mock retrieval + grade + verify)  
 7. Docs / smoke with real documents  
+
+---
+
+## Multi-step Orchestrator (Phase 5) — Example prompts
+
+One user message can trigger **multiple specialist agents** in a single `/chat` call. The orchestrator loops until all required work is done, then **synthesizes** when **2+** agents ran. The user still sees **one** assistant reply.
+
+```text
+START → orchestrator → agent(s) → orchestrator → synthesize? → END
+```
+
+| Parameter | Value |
+|-----------|-------|
+| Max specialist agents per message | **3** (`data`, `prediction`, `rag`) |
+| `synthesize` | Only when **≥ 2** specialists completed |
+| Single agent | `finish` → END (no synthesize) |
+| `routed_to: multi` | When 2+ agents ran or answer was synthesized |
+
+**Prerequisites:** LLM API key; `patient_data.csv` for **data** routes; ML artifacts for **prediction**; indexed Chroma for **rag**.
+
+```bash
+uv run pytest tests/test_agents/test_multi_step.py tests/test_agents/test_multi_step_graph.py -v
+```
+
+More detail: `docs/MULTI_ORCHESTRATION.md`.
+
+### Quick reference — `routed_to`
+
+| `routed_to` | Meaning |
+|-------------|---------|
+| `data` / `prediction` / `rag` | Single specialist agent |
+| `multi` | 2+ agents + synthesize |
+| `fallback` | Guardrail block or unclear request |
+
+### 10 manual test cases
+
+Use in Streamlit **Chat** or via smoke script (`--session-id` optional):
+
+```bash
+uv run python scripts/smoke_chat_graph.py --message "<prompt>" --session-id test-multistep-N
+```
+
+#### 1. Single agent — data only
+
+**Prompt:** `How many patients are in each income bracket?`
+
+| Expectation | |
+|-------------|--|
+| Agents | `data` only |
+| `routed_to` | `data` |
+| Synthesize | **No** — `finish` |
+| Response | SQL + table/counts; **Data query details** expander populated |
+| `agent_steps` | `orchestrator:data` → `data` → orchestrator (finish) |
+
+#### 2. Single agent — prediction only
+
+**Prompt:** `Predict ALT for a patient with BMI 30`
+
+| Expectation | |
+|-------------|--|
+| Agents | `prediction` only |
+| `routed_to` | `prediction` |
+| Synthesize | **No** |
+| Response | ALT value + `prediction` metadata |
+
+#### 3. Single agent — RAG only
+
+**Prompt:** `What does the COPD guideline say about exercise?`
+
+| Expectation | |
+|-------------|--|
+| Agents | `rag` only |
+| `routed_to` | `rag` |
+| Synthesize | **No** |
+| Response | Document-based text + citations (or honest “not in documents” if corpus has no match) |
+| Note | Run `uv run python scripts/index_documents.py` first |
+
+#### 4. Multi-step — data + prediction (classic combo)
+
+**Prompt:** `Compare average BMI in the dataset with ALT prediction for BMI 30`
+
+| Expectation | |
+|-------------|--|
+| Agents | `data` → `prediction` → **synthesize** |
+| `routed_to` | `multi` |
+| Synthesize | **Yes** — one combined answer |
+| Response | Average BMI from SQL + ALT prediction in one message |
+| Metadata | Both `data_query` and `prediction` populated |
+| Order | `data` first, then `prediction` |
+| SQL check | `FROM patients` with `AVG(bmi)` — not a hallucinated table like `avg_bmi` |
+
+```bash
+uv run python scripts/smoke_chat_graph.py \
+  --message "Compare average BMI in the dataset with ALT prediction for BMI 30" \
+  --session-id test-multistep-4
+```
+
+#### 5. Multi-step — data + RAG
+
+**Prompt:** `What is the average BMI in the dataset and what do documents recommend for low-impact exercise?`
+
+| Expectation | |
+|-------------|--|
+| Agents | `data` → `rag` → synthesize |
+| `routed_to` | `multi` |
+| Synthesize | **Yes** |
+| Response | Dataset metric + document recommendations |
+| Metadata | `data_query` + `rag` |
+
+#### 6. Multi-step — prediction + RAG (no SQL)
+
+**Prompt:** `Predict COPD for good diet and moderate exercise, and summarize what the guideline says about diet`
+
+| Expectation | |
+|-------------|--|
+| Agents | `prediction` → `rag` → synthesize |
+| `routed_to` | `multi` |
+| Synthesize | **Yes** |
+| Response | COPD class + document summary |
+| Note | No `data` — no analytics signals (`average`, `count`, `group by`, etc.) |
+
+#### 7. Multi-step — all three agents (max combo)
+
+**Prompt:** `Compare average BMI in the dataset, predict ALT for BMI 30, and what do documents say about exercise?`
+
+| Expectation | |
+|-------------|--|
+| Agents | `data` → `prediction` → `rag` → synthesize |
+| `routed_to` | `multi` |
+| Synthesize | **Yes** |
+| Response | One text covering all three sources |
+| Session ledger | 3+ `StepRecord` entries (data, prediction, rag; optional synthesis) |
+| Limit | 3 specialist agents — upper bound for MVP |
+
+#### 8. Fallback — guardrail
+
+**Prompt:** `What medication should the patient take for COPD?`
+
+| Expectation | |
+|-------------|--|
+| Agents | `fallback` only |
+| `routed_to` | `fallback` |
+| `guardrail_blocked` | `true` |
+| Synthesize | **No** |
+| Response | Blocked / out-of-scope message |
+| Loop | None — fallback goes directly to END |
+
+#### 9. Fallback — ambiguous question
+
+**Prompt:** `Tell me something interesting about patients`
+
+| Expectation | |
+|-------------|--|
+| Agents | `fallback` |
+| `routed_to` | `fallback` |
+| Synthesize | **No** |
+| Response | Help text or clarification (`requires_clarification`) |
+| Reason | No clear data / prediction / rag signals |
+
+#### 10. Single agent — data (“compare” without multi-step)
+
+**Prompt:** `Compare readmission counts by month`
+
+| Expectation | |
+|-------------|--|
+| Agents | `data` only |
+| `routed_to` | `data` |
+| Synthesize | **No** — “compare” alone does not imply multi-step |
+| Response | SQL aggregation (may ask for clarification — no month column in dataset) |
+| Note | Multi-step needs **multiple task types** in one message (analytics + prediction and/or documents) |
+
+### Bonus — session memory (not multi-step)
+
+Two messages in the **same** `session_id` (Phase 4 memory, not multi-agent in one turn):
+
+1. `Predict ALT for BMI 28`
+2. `What if BMI is 35?`
+
+| Expectation | |
+|-------------|--|
+| Second `routed_to` | `prediction` (follow-up rule) |
+| Not | `multi` — only one agent per message |
+| Behavior | `last_features` merged; BMI 35 used in second prediction |
+
+Use **New session** in Streamlit to verify isolation between sessions.
+
+### Summary table
+
+| # | Prompt (short) | Expected `routed_to` | Synthesize? |
+|---|----------------|----------------------|-------------|
+| 1 | Patients per income bracket | `data` | No |
+| 2 | Predict ALT BMI 30 | `prediction` | No |
+| 3 | COPD guideline exercise | `rag` | No |
+| 4 | Compare avg BMI + ALT BMI 30 | `multi` | Yes |
+| 5 | Avg BMI + low-impact exercise docs | `multi` | Yes |
+| 6 | Predict COPD + guideline diet | `multi` | Yes |
+| 7 | BMI + ALT + exercise docs | `multi` | Yes |
+| 8 | Medication for COPD | `fallback` | No |
+| 9 | Something interesting | `fallback` | No |
+| 10 | Compare readmissions by month | `data` | No |
 

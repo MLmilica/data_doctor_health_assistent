@@ -17,6 +17,7 @@ from agents.subagents.prediction_agent import (
 )
 from agents.tools.rag_retrieval import retrieve_chunks
 from config import settings
+from memory.persistence import append_run_step_record
 from data.vectorstore import get_vectorstore
 from schemas.citation import Citation, RetrievedChunk
 from schemas.rag import (
@@ -304,7 +305,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
                 llm_model=llm_model,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
             )
-            return append_agent_step(updated, "rag")
+            return append_agent_step(append_run_step_record(updated), "rag")
 
         retrieved_chunks = retrieve_chunks_for_query(user_message)
         relevant_chunks = grade_chunks(user_message, retrieved_chunks)
@@ -324,7 +325,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
                 llm_model=llm_model,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
             )
-            return append_agent_step(updated, "rag")
+            return append_agent_step(append_run_step_record(updated), "rag")
 
         answer = synthesize_rag_answer(user_message, relevant_chunks)
         grounding = verify_grounding(user_message, answer, relevant_chunks)
@@ -357,7 +358,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round(prior_latency + (time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "rag")
+        return append_agent_step(append_run_step_record(updated), "rag")
 
     except FileNotFoundError as exc:
         updated = _merge_state(
@@ -367,7 +368,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "rag")
+        return append_agent_step(append_run_step_record(updated), "rag")
     except Exception as exc:
         updated = _merge_state(
             state,
@@ -376,7 +377,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "rag")
+        return append_agent_step(append_run_step_record(updated), "rag")
 
 
 def _rag_synthesis_payload(user_message: str, chunks: list[RetrievedChunk]) -> dict[str, Any]:

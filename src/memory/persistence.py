@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.state import AgentState, get_data_result, get_prediction_result, get_rag_result
+from agents.state import (
+    AgentState,
+    append_step_record,
+    get_data_result,
+    get_prediction_result,
+    get_rag_result,
+)
 from config import settings
 from memory.context import steps_to_dicts, turns_to_dicts, window_steps, window_turns
 from memory.session_store import InMemorySessionStore, get_session_store
@@ -125,6 +131,14 @@ def build_step_record(state: AgentState) -> StepRecord:
     )
 
 
+def append_run_step_record(state: AgentState) -> AgentState:
+    """Append a step ledger record for the current specialist route in this run."""
+    route = state.get("route")
+    if not route or route in {"fallback", "multi", "synthesis"}:
+        return state
+    return append_step_record(state, build_step_record(state))
+
+
 def update_session_facts(state: AgentState, facts: SessionFacts) -> SessionFacts:
     """Update session facts from the terminal graph state."""
     route = state.get("route")
@@ -171,7 +185,10 @@ def persist_chat_turn(
             routed_to=response.metadata.routed_to,
         ),
     )
-    session.steps.append(build_step_record(final_state))
+    for record_dict in final_state.get("step_records") or []:
+        session.steps.append(StepRecord.model_validate(record_dict))
+    if not final_state.get("step_records"):
+        session.steps.append(build_step_record(final_state))
     session.facts = update_session_facts(final_state, session.facts)
     session.updated_at = utc_now()
     return session

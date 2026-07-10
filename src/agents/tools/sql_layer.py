@@ -20,6 +20,28 @@ _FORBIDDEN_SQL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 
+def _extract_cte_names(sql: str) -> set[str]:
+    """Return CTE aliases declared in WITH ... AS (...) clauses."""
+    ctes: set[str] = set()
+    if not re.match(r"\s*with\b", sql, re.IGNORECASE):
+        return ctes
+    for match in re.finditer(
+        r"(?:\bwith|,)\s+([a-z_][a-z0-9_]*)\s+as\s*\(",
+        sql,
+        re.IGNORECASE,
+    ):
+        ctes.add(match.group(1).lower())
+    return ctes
+
+
+def _extract_table_references(sql: str) -> list[str]:
+    """Return table names referenced after FROM or JOIN."""
+    return [
+        match.group(1).lower()
+        for match in re.finditer(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE)
+    ]
+
+
 class SqlValidationError(ValueError):
     """Raised when generated SQL fails safety checks."""
 
@@ -41,6 +63,10 @@ class SqlLayer:
     def schema_prompt(self) -> str:
         """Compact schema description for LLM SQL generation."""
         lines = [
+            f"IMPORTANT: The database has exactly ONE table: `{self._schema.table_name}`.",
+            "There are no other tables (no avg_bmi, bmi_stats, etc.).",
+            "For averages or counts, use SQL aggregates on columns in that table "
+            "(e.g. `SELECT AVG(bmi) AS average_bmi FROM patients`).",
             f"Table `{self._schema.table_name}` ({self._schema.row_count} rows).",
             "Generate DuckDB SQL using only this table and the columns below.",
             "",
@@ -74,7 +100,20 @@ class SqlLayer:
         if PATIENT_TABLE_NAME not in cleaned.lower():
             raise SqlValidationError(f"Query must read from `{PATIENT_TABLE_NAME}`.")
 
+        self._validate_table_references(cleaned)
+
         return self._ensure_limit(cleaned)
+
+    def _validate_table_references(self, sql: str) -> None:
+        """Ensure every FROM/JOIN target is `patients` or a CTE defined in the same query."""
+        allowed_ctes = _extract_cte_names(sql)
+        allowed = {PATIENT_TABLE_NAME, *allowed_ctes}
+        for table in _extract_table_references(sql):
+            if table not in allowed:
+                raise SqlValidationError(
+                    f"Unknown table `{table}`. Only `{PATIENT_TABLE_NAME}` exists; "
+                    "use column aggregates (e.g. AVG(bmi)), not invented table names."
+                )
 
     @staticmethod
     def _normalize_sql(sql: str) -> str:

@@ -1,4 +1,4 @@
-"""LangGraph graph — orchestrator routes to specialist agents."""
+"""LangGraph graph — orchestrator routes to specialist agents with multi-step loop."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from agents.subagents.data_agent import run_data_agent
 from agents.subagents.fallback_agent import run_fallback_agent
 from agents.subagents.prediction_agent import run_prediction_agent
 from agents.subagents.rag_agent import run_rag_agent
+from agents.subagents.synthesize_agent import run_synthesize_agent
 from schemas.chat import ChatRequest, ChatResponse
-from schemas.routing import AgentRoute
+from schemas.routing import AgentRoute, OrchestratorAction
 
 ORCHESTRATOR_NODE = "orchestrator"
 PREDICT_NODE = AgentRoute.PREDICTION.value
 DATA_NODE = AgentRoute.DATA.value
 RAG_NODE = AgentRoute.RAG.value
 FALLBACK_NODE = AgentRoute.FALLBACK.value
+SYNTHESIZE_NODE = "synthesize"
 
 
 def _route_selector(state: AgentState) -> str:
@@ -28,6 +30,16 @@ def _route_selector(state: AgentState) -> str:
     return FALLBACK_NODE
 
 
+def _after_orchestrator_selector(state: AgentState) -> str:
+    """Route from orchestrator to specialist, synthesize, or END."""
+    action = state.get("orchestrator_action", OrchestratorAction.ROUTE.value)
+    if action == OrchestratorAction.SYNTHESIZE.value:
+        return SYNTHESIZE_NODE
+    if action == OrchestratorAction.FINISH.value:
+        return END
+    return _route_selector(state)
+
+
 def build_graph():
     """Compile the orchestrated multi-agent graph used by /chat."""
     builder = StateGraph(AgentState)
@@ -36,22 +48,26 @@ def build_graph():
     builder.add_node(DATA_NODE, run_data_agent)
     builder.add_node(RAG_NODE, run_rag_agent)
     builder.add_node(FALLBACK_NODE, run_fallback_agent)
+    builder.add_node(SYNTHESIZE_NODE, run_synthesize_agent)
 
     builder.add_edge(START, ORCHESTRATOR_NODE)
     builder.add_conditional_edges(
         ORCHESTRATOR_NODE,
-        _route_selector,
+        _after_orchestrator_selector,
         {
             PREDICT_NODE: PREDICT_NODE,
             DATA_NODE: DATA_NODE,
             RAG_NODE: RAG_NODE,
             FALLBACK_NODE: FALLBACK_NODE,
+            SYNTHESIZE_NODE: SYNTHESIZE_NODE,
+            END: END,
         },
     )
-    builder.add_edge(PREDICT_NODE, END)
-    builder.add_edge(DATA_NODE, END)
-    builder.add_edge(RAG_NODE, END)
+    builder.add_edge(PREDICT_NODE, ORCHESTRATOR_NODE)
+    builder.add_edge(DATA_NODE, ORCHESTRATOR_NODE)
+    builder.add_edge(RAG_NODE, ORCHESTRATOR_NODE)
     builder.add_edge(FALLBACK_NODE, END)
+    builder.add_edge(SYNTHESIZE_NODE, END)
     return builder.compile()
 
 

@@ -21,6 +21,7 @@ from agents.state import (
     set_prediction_result,
 )
 from config import settings
+from memory.persistence import append_run_step_record
 from memory.context import build_prediction_extraction_prompt, merge_patient_features
 from ml.feature_mapper import run_prediction
 from schemas.prediction import (
@@ -278,7 +279,7 @@ def run_prediction_agent(state: AgentState) -> AgentState:
                 llm_model=llm_models,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
             )
-            return append_agent_step(updated, "prediction")
+            return append_agent_step(append_run_step_record(updated), "prediction")
 
         request = PredictionRequest(
             target=extraction.target,
@@ -309,7 +310,7 @@ def run_prediction_agent(state: AgentState) -> AgentState:
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             top_global_factors=top_global_factors,
         )
-        return append_agent_step(updated, "prediction")
+        return append_agent_step(append_run_step_record(updated), "prediction")
 
     except Exception as exc:
         return _merge_state(

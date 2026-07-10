@@ -40,6 +40,7 @@ class AgentState(TypedDict, total=False):
     session_facts: dict[str, Any]
     prior_steps: list[dict[str, Any]]
     step_records: list[dict[str, Any]]
+    orchestrator_action: str
 
     # --- LLM extraction (prediction node) ---
     extraction: dict[str, Any]
@@ -215,6 +216,13 @@ def _metadata_from_state(state: AgentState):
     from schemas.chat import ChatAgentMetadata
 
     routed_to = state.get("route")
+    specialist_steps = [
+        record.get("agent")
+        for record in (state.get("step_records") or [])
+        if record.get("agent") in {"prediction", "data", "rag"}
+    ]
+    if len(specialist_steps) >= 2 or routed_to == "multi":
+        routed_to = "multi"
     return ChatAgentMetadata(
         agent=routed_to or "orchestrator",
         routed_to=routed_to,

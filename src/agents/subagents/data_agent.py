@@ -17,17 +17,23 @@ from agents.subagents.prediction_agent import (
 )
 from agents.tools.sql_layer import SqlValidationError, get_sql_layer
 from config import settings
+from memory.persistence import append_run_step_record
 from schemas.sql import DATA_QUERY_DISCLAIMER, DataQueryResult, LLMSQLExtraction
 
 SQL_EXTRACTION_SYSTEM_PROMPT = """You write DuckDB SQL for clinical analytics questions.
 
 Rules:
 - Output exactly one read-only SELECT (or WITH ... SELECT) against the `patients` table.
+- The database has ONLY the `patients` table. Never use FROM/JOIN with any other table name.
+- For dataset-wide metrics (average BMI, counts, etc.), use aggregates on columns in `patients`.
+  Example: `SELECT AVG(bmi) AS average_bmi FROM patients`
+- Do not invent tables such as `avg_bmi`, `bmi_stats`, or `patient_summary`.
 - Use only columns from the provided schema.
 - Prefer clear aliases for aggregates (e.g. patient_count, average_bmi).
 - Do not use DDL/DML, file readers, or multiple statements.
 - If the question is ambiguous, set requires_clarification=true and ask a focused follow-up.
 - The dataset has no admission dates — do not invent month/time columns. For readmission analytics, use the `readmitted` flag.
+- For combo questions (e.g. compare average BMI with a prediction), write SQL only for the analytics part.
 """
 
 DATA_SYNTHESIS_SYSTEM_PROMPT = """You answer clinical analytics questions for an analyst audience.
@@ -48,19 +54,28 @@ def _parse_sql_extraction(result: Any) -> LLMSQLExtraction:
     return LLMSQLExtraction.model_validate(result)
 
 
-def extract_sql_with_llm(user_message: str, *, schema_prompt: str) -> LLMSQLExtraction:
+def extract_sql_with_llm(
+    user_message: str,
+    *,
+    schema_prompt: str,
+    correction_hint: str | None = None,
+) -> LLMSQLExtraction:
     """LLM: natural language → SQL extraction schema."""
     configure_llm_environment()
     llm = routing_llm().with_structured_output(LLMSQLExtraction)
+    prompt = (
+        f"Schema:\n{schema_prompt}\n\n"
+        f"User question:\n{user_message}"
+    )
+    if correction_hint:
+        prompt += (
+            "\n\nYour previous SQL was rejected or failed. "
+            f"Fix it using only the `patients` table:\n{correction_hint}"
+        )
     result = llm.invoke(
         [
             SystemMessage(content=SQL_EXTRACTION_SYSTEM_PROMPT),
-            HumanMessage(
-                content=(
-                    f"Schema:\n{schema_prompt}\n\n"
-                    f"User question:\n{user_message}"
-                )
-            ),
+            HumanMessage(content=prompt),
         ]
     )
     return _parse_sql_extraction(result)
@@ -134,22 +149,39 @@ def run_data_agent(state: AgentState) -> AgentState:
     try:
         require_llm_api_key()
         layer = get_sql_layer()
-        extraction = extract_sql_with_llm(user_message, schema_prompt=layer.schema_prompt())
+        schema_prompt = layer.schema_prompt()
+        correction_hint: str | None = None
 
-        if extraction.requires_clarification:
-            response_text = (
-                extraction.clarification_prompt
-                or "Could you clarify which metric or grouping you need from the patient dataset?"
+        for attempt in range(2):
+            extraction = extract_sql_with_llm(
+                user_message,
+                schema_prompt=schema_prompt,
+                correction_hint=correction_hint,
             )
-            updated = _merge_state(
-                state,
-                response_text=response_text,
-                llm_model=llm_model,
-                latency_ms=round((time.perf_counter() - started) * 1000, 2),
-            )
-            return append_agent_step(updated, "data")
 
-        query_result = layer.execute(extraction.sql, explanation=extraction.explanation)
+            if extraction.requires_clarification:
+                response_text = (
+                    extraction.clarification_prompt
+                    or "Could you clarify which metric or grouping you need from the patient dataset?"
+                )
+                updated = _merge_state(
+                    state,
+                    response_text=response_text,
+                    llm_model=llm_model,
+                    latency_ms=round((time.perf_counter() - started) * 1000, 2),
+                )
+                return append_agent_step(append_run_step_record(updated), "data")
+
+            try:
+                query_result = layer.execute(extraction.sql, explanation=extraction.explanation)
+                break
+            except (SqlValidationError, Exception) as exc:
+                if attempt == 0:
+                    correction_hint = (
+                        f"Error: {exc}\nRejected SQL:\n{extraction.sql}"
+                    )
+                    continue
+                raise
         state = set_data_result(state, query_result)
         facts = _data_facts_payload(user_message, query_result)
         try:
@@ -163,7 +195,7 @@ def run_data_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round(prior_latency + (time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "data")
+        return append_agent_step(append_run_step_record(updated), "data")
 
     except SqlValidationError as exc:
         sql_detail = f"\n\nGenerated SQL:\n{extraction.sql}" if extraction is not None else ""
@@ -174,7 +206,7 @@ def run_data_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "data")
+        return append_agent_step(append_run_step_record(updated), "data")
     except FileNotFoundError as exc:
         updated = _merge_state(
             state,
@@ -183,7 +215,7 @@ def run_data_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "data")
+        return append_agent_step(append_run_step_record(updated), "data")
     except Exception as exc:
         updated = _merge_state(
             state,
@@ -192,4 +224,4 @@ def run_data_agent(state: AgentState) -> AgentState:
             llm_model=llm_model,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
-        return append_agent_step(updated, "data")
+        return append_agent_step(append_run_step_record(updated), "data")

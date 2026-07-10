@@ -100,12 +100,15 @@ uv run streamlit run ui/app.py
 **Graph flow:**
 
 ```text
-START -> orchestrator -> predict | data | rag | fallback -> END
+START → orchestrator → predict | data | rag | fallback
+              ↑___________|  (specialists loop back)
+              → synthesize? → END   (2+ agents)
+              → END                 (single agent or fallback)
 ```
 
 ![LangGraph chat workflow](docs/assets/chat_graph.png)
 
-Regenerate after graph changes: `uv run python scripts/regenerate_graph_png.py`
+Regenerate after graph changes: `PYTHONPATH=src uv run python scripts/regenerate_graph_png.py`
 
 Index clinical documents for RAG: `uv run python scripts/index_documents.py` (see `docs/RAG.md`).
 
@@ -220,7 +223,7 @@ load ChatSession → enrich AgentState → graph.invoke → append turns + step 
 - `memory_max_prior_steps` (default 5) — recent step ledger window
 - `memory_sql_sample_rows` (default 5) — max SQL rows stored in step artifacts
 
-**Limitation:** memory lives in **process RAM**. Restarting the API clears all sessions. LangGraph checkpointer is not used yet (planned for multi-step orchestration).
+**Limitation:** memory lives in **process RAM**. Restarting the API clears all sessions. LangGraph checkpointer is planned for Phase 5b (see [Multi-step orchestrator](#multi-step-orchestrator-phase-5)).
 
 More detail: `docs/MEMORY.md`.
 
@@ -262,3 +265,90 @@ uv run python scripts/smoke_chat_graph.py \
 **Verify isolation:** click **New session** in Streamlit (new UUID) or use a different `--session-id` — prior features should not carry over.
 
 **Verify restart behavior:** stop and restart the API, then send a follow-up with the old `session_id` — memory is empty (expected for in-memory POC).
+
+## Multi-step orchestrator (Phase 5)
+
+One user message can trigger **multiple specialist agents** in a single `/chat` call. The orchestrator runs in a **loop**, each agent appends a `StepRecord`, and a **synthesize** node merges results when two or more agents ran. The user still sees **one** assistant reply.
+
+### What was implemented
+
+| Component | Role |
+|-----------|------|
+| `agents/graph.py` | Loop: specialists → orchestrator; `synthesize` node; `finish` → END |
+| `agents/orchestrator.py` | Guardrails + `plan_next_step()`; sets `orchestrator_action` |
+| `agents/multi_step.py` | Rule/LLM planner: which agents are needed, next action |
+| `agents/subagents/synthesize_agent.py` | LLM merges `step_records` into final `response_text` |
+| `schemas/routing.py` | `OrchestratorAction` (`route`, `synthesize`, `finish`), `LLMMultiStepPlan` |
+| `agents/state.py` | `orchestrator_action`; metadata `routed_to: "multi"` when applicable |
+| `memory/persistence.py` | `append_run_step_record()`; persist all `step_records` per turn |
+| Specialist agents | Each appends a compact `StepRecord` after execution |
+
+**Per `/chat` request (multi-agent):**
+
+```text
+load ChatSession → orchestrator → agent → orchestrator → … → synthesize? → persist → save
+```
+
+**Orchestrator actions:**
+
+| `orchestrator_action` | Meaning |
+|-----------------------|---------|
+| `route` | Call next specialist (`data`, `prediction`, or `rag`) |
+| `synthesize` | All required work done — merge step summaries |
+| `finish` | Single agent is enough — use its `response_text` |
+
+**Rules (MVP):**
+
+- Max **3 specialist agents** per message (`data`, `prediction`, `rag`)
+- `synthesize` runs only when **≥ 2** specialists completed
+- Single-agent questions behave as before (no synthesize step)
+- `fallback` still goes directly to END (no loop)
+- LangGraph checkpointer deferred to Phase 5b
+
+**Config** (`src/config.py`):
+
+- `orchestrator_max_agent_steps` (default 3) — cap on specialist agents per message
+
+More detail: `docs/MULTI_ORCHESTRATION.md`.
+
+### How to test multi-step
+
+**Unit tests (no LLM):**
+
+```bash
+uv run pytest tests/test_agents/test_multi_step.py -v
+```
+
+**Graph integration** (mocked LLM synthesis):
+
+```bash
+uv run pytest tests/test_agents/test_multi_step_graph.py -v
+```
+
+**Full suite:**
+
+```bash
+uv run pytest
+```
+
+**Manual — Streamlit:**
+
+1. Start API and UI (see [§5](#5-api-and-streamlit-ui)).
+2. Send a combo question, e.g. *"Compare average BMI in the dataset with ALT prediction for BMI 30"*
+3. Expect one assistant message combining SQL + prediction; metadata may show `routed_to: multi`.
+
+**Manual — smoke script:**
+
+```bash
+uv run python scripts/smoke_chat_graph.py \
+  --message "Compare average BMI in the dataset with ALT prediction for BMI 30" \
+  --session-id demo-multistep
+```
+
+**Single-agent sanity check** (no synthesize — should still work):
+
+```bash
+uv run python scripts/smoke_chat_graph.py \
+  --message "How many patients per income bracket?" \
+  --expect-route data
+```
