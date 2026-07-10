@@ -1040,6 +1040,62 @@ Use **New session** in Streamlit to verify isolation between sessions.
 
 ---
 
+## Chart & Insight tool test prompts
+
+Use these prompts to validate the **Chart Tool** and **Insight Tool** inside the data agent (`sql` / `chart` / `insight` sub-paths). All route to `data` at the orchestrator level; the data agent then picks the internal tool.
+
+**Prerequisites:** Same as the main stack, plus `uv run python -m ml.train` so `artifacts/insights/*_shap_summary.json` exist for insight prompts. Restart API/UI after routing changes.
+
+| # | Prompt | Internal path | What to verify |
+|---|--------|---------------|----------------|
+| 1 | Compare glucose levels between readmitted and non-readmitted patients. | `chart` → boxplot | Expander **Chart**; `chart_type: boxplot`, `x=readmitted`, `y=last_lab_glucose`; Plotly boxplot; SQL like `SELECT last_lab_glucose, readmitted FROM patients` |
+| 2 | Show the distribution of BMI in the dataset. | `chart` → histogram | Expander **Chart**; `chart_type: histogram`, `x=bmi`; histogram rendered |
+| 3 | Show the relationship between BMI and alanine aminotransferase. | `chart` → scatter | Expander **Chart**; `chart_type: scatter`, `x=bmi`, `y=alanine_aminotransferase`; scatter plot (ALT largely BMI-driven in this POC) |
+| 4 | What are the main risk factors for COPD? | `insight` | `routed_to: data` (not `rag`); expander **Model insights** with `target: copd`; top features from offline SHAP (e.g. `diagnosis_code`, `exercise_frequency`, `diet_quality`) — not invented from documents |
+| 5 | What drives ALT predictions in this dataset? | `insight` | `routed_to: data`; expander **Model insights** with `target: alt`; top features dominated by `bmi`; synthesis prose grounded in artifact JSON |
+
+### Full prompt text (copy-paste)
+
+1. `Compare glucose levels between readmitted and non-readmitted patients.`
+
+2. `Show the distribution of BMI in the dataset.`
+
+3. `Show the relationship between BMI and alanine aminotransferase.`
+
+4. `What are the main risk factors for COPD?`
+
+5. `What drives ALT predictions in this dataset?`
+
+### Routing notes
+
+- Chart prompts use signals like `compare`, `distribution`, `relationship between`, `show the` → data agent **chart** path. LLM outputs `ChartSpec` only; SQL is deterministic; Plotly comes from predefined renderers.
+- Insight prompts use signals like `risk factors`, `what drives` → data agent **insight** path. Answers come from **offline** SHAP / feature-importance JSON; the LLM synthesizes prose only.
+- Phrasing like *What are the main risk factors…* must **not** route to RAG (`what are the` alone is a clinical-doc signal). Orchestrator + `multi_step.detect_required_agents` prioritize model-insight signals over RAG.
+- **Not** the same as prediction `top_global_factors`: prediction shows 3 global drivers in the prediction expander; insight tool returns a fuller artifact-backed answer in **Model insights**.
+
+### Negative test (optional)
+
+**Prompt:** `Compare COPD and ALT risk factors`
+
+| Expectation | |
+|-------------|--|
+| `routed_to` | `data` (insight path attempted) |
+| Response | Clarification — specify COPD **or** ALT (ambiguous target) |
+| Not | RAG document search |
+
+### Follow-up after prediction (optional)
+
+1. `Predict ALT for BMI 20`
+2. `What are the main risk factors for ALT?`
+
+| Expectation | |
+|-------------|--|
+| Turn 1 | `prediction`; **Top global factors** expander (3 names from SHAP) |
+| Turn 2 | `data` → insight; **Model insights** expander with full `alt` artifact table |
+| Not | Turn 2 routed to RAG because of prior prediction context alone |
+
+---
+
 ## End-to-end system test prompts (assignment checklist)
 
 Use these prompts to validate the full Data Doctor stack: ML models, dataset SQL, RAG over indexed documents, orchestration, and the Streamlit/API chat interface.

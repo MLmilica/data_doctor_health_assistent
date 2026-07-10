@@ -32,6 +32,7 @@ from schemas.prediction import PatientFeatures, PredictionRequest, PredictionTar
 
 PAGE_TITLE = "Data Doctor"
 EMPTY_SELECT_LABEL = "— select —"
+TURN_HISTORY_LIMIT = 8
 NUMERIC_FIELDS = set(ALT_NUM_COLS) | {"urban", "readmitted"}
 CATEGORICAL_OPTIONS: dict[str, list[str]] = {
     "diet_quality": ["Poor", "Average", "Good"],
@@ -50,6 +51,10 @@ def _init_session_state() -> None:
         st.session_state.api_base_url = settings.api_base_url
     if "health" not in st.session_state:
         st.session_state.health = None
+    if "last_turn" not in st.session_state:
+        st.session_state.last_turn = None
+    if "turn_history" not in st.session_state:
+        st.session_state.turn_history = []
 
 
 def fetch_health(api_base_url: str) -> HealthResponse | None:
@@ -111,6 +116,208 @@ def _routing_metadata_parts(response: ChatResponse) -> list[str]:
     if meta.guardrail_blocked:
         parts.append("guardrail blocked")
     return parts
+
+
+def _detect_data_tool(response: ChatResponse) -> str | None:
+    """Infer data-agent sub-path from structured response fields."""
+    if response.chart is not None:
+        return f"chart ({response.chart.chart_type})"
+    if response.insight is not None:
+        return f"insight ({response.insight.target})"
+    if response.data_query is not None:
+        return "sql"
+    return None
+
+
+def _truncate_text(text: str, *, limit: int = 72) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1] + "…"
+
+
+def _build_turn_snapshot(*, user_message: str, response: ChatResponse) -> dict[str, Any]:
+    """Compact observability payload for the sidebar (UI-only, no API changes)."""
+    meta = response.metadata
+    data_tool = _detect_data_tool(response)
+    snapshot: dict[str, Any] = {
+        "user_message": _truncate_text(user_message),
+        "routed_to": meta.routed_to,
+        "data_tool": data_tool,
+        "route_confidence": meta.route_confidence,
+        "route_source": meta.route_source,
+        "guardrail_blocked": meta.guardrail_blocked,
+        "llm_model": meta.llm_model,
+        "latency_ms": meta.latency_ms,
+    }
+
+    if response.chart is not None:
+        chart = response.chart
+        snapshot["chart"] = {
+            "chart_type": chart.chart_type,
+            "title": chart.title,
+            "x_column": chart.x_column,
+            "y_column": chart.y_column,
+            "group_by": chart.group_by,
+            "row_count": chart.row_count,
+            "sql": chart.sql,
+        }
+    elif response.insight is not None:
+        insight = response.insight
+        snapshot["insight"] = {
+            "target": insight.target,
+            "source": insight.source,
+            "top_features": [
+                str(item.get("feature", ""))
+                for item in insight.top_features[:5]
+                if item.get("feature")
+            ],
+        }
+    elif response.data_query is not None:
+        query = response.data_query
+        snapshot["data_query"] = {
+            "row_count": query.row_count,
+            "truncated": query.truncated,
+            "columns": query.columns,
+            "sql": query.sql,
+            "explanation": query.explanation,
+        }
+
+    if response.prediction is not None:
+        prediction = response.prediction
+        snapshot["prediction"] = {
+            "target": prediction.target,
+            "can_predict": prediction.can_predict,
+            "prediction": prediction.prediction,
+            "top_global_factors": prediction.top_global_factors,
+        }
+    elif response.predictions:
+        snapshot["predictions"] = {
+            key: {
+                "can_predict": details.can_predict,
+                "prediction": details.prediction,
+            }
+            for key, details in response.predictions.items()
+        }
+
+    if response.rag is not None:
+        rag = response.rag
+        snapshot["rag"] = {
+            "retrieved_count": rag.retrieved_count,
+            "relevant_count": rag.relevant_count,
+            "grounded": rag.grounded,
+            "grounding_retry_count": rag.grounding_retry_count,
+            "citation_count": len(rag.citations),
+        }
+
+    return snapshot
+
+
+def _append_turn_history(snapshot: dict[str, Any]) -> None:
+    history: list[dict[str, Any]] = list(st.session_state.turn_history)
+    history.append(
+        {
+            "prompt": snapshot.get("user_message"),
+            "agent": snapshot.get("routed_to"),
+            "tool": snapshot.get("data_tool") or "—",
+            "latency_ms": snapshot.get("latency_ms"),
+        }
+    )
+    st.session_state.turn_history = history[-TURN_HISTORY_LIMIT:]
+
+
+def _render_last_turn_observability(turn: dict[str, Any]) -> None:
+    st.sidebar.markdown("**Last turn**")
+    st.sidebar.caption(f"Prompt: {turn.get('user_message', '')}")
+
+    routed_to = turn.get("routed_to") or "—"
+    data_tool = turn.get("data_tool")
+    tool_label = data_tool if data_tool else "—"
+    st.sidebar.write(f"**Agent:** `{routed_to}`")
+    st.sidebar.write(f"**Data tool:** `{tool_label}`")
+
+    confidence = turn.get("route_confidence")
+    if confidence is not None:
+        st.sidebar.write(f"**Confidence:** {confidence:.0%}")
+    if turn.get("route_source"):
+        st.sidebar.write(f"**Via:** `{turn['route_source']}`")
+    if turn.get("llm_model"):
+        st.sidebar.write(f"**Model:** `{turn['llm_model']}`")
+    latency = turn.get("latency_ms")
+    if latency is not None:
+        st.sidebar.write(f"**Latency:** {latency:.0f} ms")
+    if turn.get("guardrail_blocked"):
+        st.sidebar.warning("Guardrail blocked")
+
+    chart = turn.get("chart")
+    if chart:
+        st.sidebar.markdown("**Chart output**")
+        st.sidebar.write(
+            f"`{chart['chart_type']}` · x=`{chart['x_column']}`"
+            + (f" · y=`{chart['y_column']}`" if chart.get("y_column") else "")
+        )
+        st.sidebar.caption(f"Rows plotted: {chart.get('row_count', 0)}")
+        with st.sidebar.expander("Chart SQL", expanded=False):
+            st.code(chart.get("sql", ""), language="sql")
+
+    insight = turn.get("insight")
+    if insight:
+        st.sidebar.markdown("**Insight output**")
+        st.sidebar.write(f"Target: `{insight.get('target', '').upper()}`")
+        top_features = insight.get("top_features") or []
+        if top_features:
+            st.sidebar.caption("Top features: " + ", ".join(top_features))
+
+    data_query = turn.get("data_query")
+    if data_query:
+        st.sidebar.markdown("**SQL output**")
+        st.sidebar.caption(
+            f"Rows: {data_query.get('row_count', 0)}"
+            + (" · truncated" if data_query.get("truncated") else "")
+        )
+        if data_query.get("explanation"):
+            st.sidebar.caption(str(data_query["explanation"]))
+        with st.sidebar.expander("SQL", expanded=False):
+            st.code(data_query.get("sql", ""), language="sql")
+
+    prediction = turn.get("prediction")
+    if prediction:
+        st.sidebar.markdown("**Prediction output**")
+        st.sidebar.write(
+            f"`{prediction.get('target', '').upper()}` → `{prediction.get('prediction')}`"
+        )
+        factors = prediction.get("top_global_factors") or []
+        if factors:
+            st.sidebar.caption("Top global factors: " + ", ".join(factors))
+
+    predictions = turn.get("predictions")
+    if predictions:
+        st.sidebar.markdown("**Prediction output**")
+        for key, details in predictions.items():
+            st.sidebar.write(f"`{key.upper()}` → `{details.get('prediction')}`")
+
+    rag = turn.get("rag")
+    if rag:
+        st.sidebar.markdown("**RAG output**")
+        st.sidebar.caption(
+            f"Retrieved: {rag.get('retrieved_count', 0)} · "
+            f"Relevant: {rag.get('relevant_count', 0)} · "
+            f"Grounded: {rag.get('grounded', False)}"
+        )
+
+
+def _render_turn_history() -> None:
+    history: list[dict[str, Any]] = st.session_state.get("turn_history") or []
+    if not history:
+        return
+    st.sidebar.markdown("**Turn history**")
+    for index, entry in enumerate(reversed(history), start=1):
+        latency = entry.get("latency_ms")
+        latency_text = f" · {latency:.0f} ms" if latency is not None else ""
+        st.sidebar.caption(
+            f"{index}. `{entry.get('agent', '—')}` / `{entry.get('tool', '—')}`"
+            f"{latency_text} — {entry.get('prompt', '')}"
+        )
 
 
 def _render_data_query_details(details: ChatDataQueryDetails) -> None:
@@ -245,17 +452,19 @@ def _render_sidebar() -> None:
         )
 
     st.sidebar.divider()
-    st.sidebar.caption(f"Session ID: `{st.session_state.session_id}`")
+    st.sidebar.caption(f"Session ID: `{st.session_state.session_id[:8]}…`")
 
-    last_routing = st.session_state.get("last_routing")
-    if last_routing:
-        st.sidebar.markdown("**Last routing**")
-        st.sidebar.json(last_routing)
+    last_turn = st.session_state.get("last_turn")
+    if last_turn:
+        _render_last_turn_observability(last_turn)
+        st.sidebar.divider()
+        _render_turn_history()
 
     if st.sidebar.button("New session"):
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = []
-        st.session_state.last_routing = None
+        st.session_state.last_turn = None
+        st.session_state.turn_history = []
         st.rerun()
 
 
@@ -291,15 +500,9 @@ def _chat_tab() -> None:
         st.session_state.messages.append(
             {"role": "assistant", "content": response.text, "response": response},
         )
-        st.session_state.last_routing = {
-            "routed_to": response.metadata.routed_to,
-            "route_confidence": response.metadata.route_confidence,
-            "route_source": response.metadata.route_source,
-            "guardrail_blocked": response.metadata.guardrail_blocked,
-            "data_rows": response.data_query.row_count if response.data_query else None,
-            "rag_relevant": response.rag.relevant_count if response.rag else None,
-            "rag_grounded": response.rag.grounded if response.rag else None,
-        }
+        snapshot = _build_turn_snapshot(user_message=prompt, response=response)
+        st.session_state.last_turn = snapshot
+        _append_turn_history(snapshot)
         st.rerun()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text
