@@ -14,11 +14,12 @@ It combines:
 
 Current implemented core:
 
-- **Orchestration:** guardrails, hybrid routing (rules + LLM), `data` agent (SQL/DuckDB), stub `rag` / `fallback` routing
-- **Prediction agent:** feature mapping, LLM extract → ML → LLM synthesis
-- **Data agent:** LLM SQL extract → validated DuckDB query → LLM synthesis (SQL + table in `data_query` metadata for verification)
-- Deterministic prediction response contract (LLM does not invent prediction values)
-- LangGraph flow: `START -> orchestrator -> predict | data | rag | fallback -> END`
+- **Orchestration:** guardrails, hybrid routing (rules + LLM), multi-step loop with synthesize
+- **Prediction agent:** LLM extract → ML → LLM synthesis
+- **Data agent:** SQL, chart, and insight tools (internal paths inside `data`)
+- **RAG agent:** retrieve → grade → synthesize → grounding verify
+- **Session memory:** transcript, step ledger, session facts (in-process)
+- LangGraph flow: `START → orchestrator → specialists (loop) → synthesize? → END`
 
 ---
 
@@ -1118,7 +1119,7 @@ Use these prompts to validate the full Data Doctor stack: ML models, dataset SQL
 | 6 | How many patients were taking more than 5 medications? | `data` | SQL on `medication_count > 5`; numeric count in response |
 | 7 | What are the symptoms of seasonal allergies? | `rag` | Routes to RAG (not fallback); citations or explicit not-found if corpus lacks symptom text |
 | 8 | Summarize the treatment plan for diabetic patients over 60. | `rag` | Treatment-plan chunks + summary; **Document sources** expander |
-| 9 | Compare lab results across readmitted vs non-readmitted patients | `data` | SQL comparing cohorts (e.g. `readmitted` groups + lab columns); not RAG — this is CSV analytics |
+| 9 | Compare lab results across readmitted vs non-readmitted patients | `data` | Chart (boxplot) or SQL; not RAG — CSV analytics |
 
 ### Full prompt text (copy-paste)
 
